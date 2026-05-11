@@ -1,0 +1,46 @@
+# Play Store Listing — Reference Sheet
+
+## App details
+- Title:           NFCommunicator                    (14 chars / 50 max)
+- Package:         dev.alsatianconsulting.nfcommunicator
+- Version name:    1.0
+- Version code:    1
+- Target SDK:      36  (Android 16)
+- Min SDK:         26  (Android 8.0 Oreo)
+
+## Category
+Primary:   Tools
+(Alt:      Communication)
+
+## Content rating
+Self-rating questionnaire answers (Google Play):
+- Violence:        None
+- Sexual content:  None
+- Profanity:       None
+- Controlled substances: None
+- User-generated content: No (messages are local to physical NFC tags)
+Expected rating: Everyone (PEGI 3 equivalent)
+
+## Privacy policy
+The app collects no data and has no network access. A privacy policy URL is
+required by Google Play. Recommended: host a one-page policy stating the app
+stores no personal data, makes no network connections, and uses AES-256
+encryption locally.
+
+## Contact details
+Developer:   Alsatian Consulting
+Email:       geoff@alsatian.consulting
+
+## Ads
+None — app contains no advertising.
+
+## In-app purchases
+None.
+
+## Permissions declared in manifest
+- android.permission.NFC  (required — reads/writes NFC tags)
+
+## Graphics assets (all in playstore/)
+- feature-graphic-1024x500.png    Feature graphic
+- icon-512x512.png                Hi-res icon
+- screenshots/selected/*.png      9 phone screenshots (1080×2400)

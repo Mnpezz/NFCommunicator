@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NFCommunicator — Privacy Policy</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1923;
+      color: #d4d8de;
+      line-height: 1.7;
+      padding: 2rem 1rem 4rem;
+    }
+
+    .card {
+      max-width: 760px;
+      margin: 0 auto;
+      background: #1a2533;
+      border: 1px solid #263040;
+      border-radius: 12px;
+      padding: 2.5rem 2.75rem;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid #263040;
+    }
+
+    header img {
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: #e87614;
+      letter-spacing: 0.02em;
+    }
+
+    header p {
+      font-size: 0.85rem;
+      color: #7a8795;
+      margin-top: 0.15rem;
+    }
+
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #e87614;
+      margin: 2rem 0 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    p { margin-bottom: 0.75rem; }
+
+    ul {
+      margin: 0.25rem 0 0.75rem 1.4rem;
+    }
+
+    ul li { margin-bottom: 0.35rem; }
+
+    .highlight-box {
+      background: #0f1923;
+      border-left: 3px solid #e87614;
+      border-radius: 0 6px 6px 0;
+      padding: 0.9rem 1.1rem;
+      margin: 1.25rem 0;
+      font-size: 0.95rem;
+    }
+
+    a { color: #e87614; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    footer {
+      margin-top: 2.5rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid #263040;
+      font-size: 0.82rem;
+      color: #5a6575;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+
+    <header>
+      <div>
+        <h1>NFCommunicator Privacy Policy</h1>
+        <p>Effective date: May 8, 2026 &nbsp;·&nbsp; Developer: Alsatian Consulting</p>
+      </div>
+    </header>
+
+    <div class="highlight-box">
+      NFCommunicator does not collect, transmit, or store any personal data.
+      The app has no network access and no analytics. Everything stays on your
+      device and on the physical NFC tags you choose to use.
+    </div>
+
+    <h2>Information We Collect</h2>
+    <p>None. NFCommunicator does not collect any information about you or your device.</p>
+
+    <h2>How the App Works</h2>
+    <p>
+      NFCommunicator reads and writes encrypted text messages to physical NFC tags.
+      All processing happens locally on your Android device:
+    </p>
+    <ul>
+      <li>Messages you type are encrypted on-device before being written to an NFC tag.</li>
+      <li>Encryption uses AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation.</li>
+      <li>A random salt and nonce are generated per message — no two encrypted payloads are the same.</li>
+      <li>The password you enter is used only during the current session and is never stored anywhere.</li>
+      <li>Decrypted message text exists only in memory for as long as you have it open on screen.</li>
+    </ul>
+
+    <h2>Network Access</h2>
+    <p>
+      The app declares no network permissions and makes no network connections of any kind.
+      There are no analytics SDKs, crash reporters, ad networks, or third-party libraries
+      that communicate over the internet.
+    </p>
+
+    <h2>NFC Tag Data</h2>
+    <p>
+      Data written to an NFC tag is stored on the physical tag itself — not in the cloud,
+      not on our servers, and not in any account. Control of that data belongs entirely to
+      whoever possesses the physical tag.
+    </p>
+
+    <h2>Permissions</h2>
+    <p>The app requests one permission:</p>
+    <ul>
+      <li>
+        <strong>NFC</strong> — required to read from and write to NFC tags.
+        This permission is not used for any other purpose.
+      </li>
+    </ul>
+
+    <h2>Third Parties</h2>
+    <p>
+      NFCommunicator does not share data with any third party because no data is collected.
+      The app contains no advertising, no in-app purchases, and no third-party SDKs
+      that access user data.
+    </p>
+
+    <h2>Children's Privacy</h2>
+    <p>
+      The app does not collect personal information from anyone, including children
+      under the age of 13. It is rated Everyone on Google Play.
+    </p>
+
+    <h2>Changes to This Policy</h2>
+    <p>
+      If the privacy practices of NFCommunicator ever change, an updated policy will
+      be published at this URL with a revised effective date. Given that the app
+      collects no data, we do not anticipate material changes.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions about this policy can be directed to:<br>
+      <strong>Alsatian Consulting</strong><br>
+      <a href="mailto:info@alsatian.consulting">info@alsatian.consulting</a>
+    </p>
+
+    <footer>
+      NFCommunicator is developed by Alsatian Consulting.
+      This policy applies to the Android application with package ID
+      <code>dev.alsatianconsulting.nfcommunicator</code>.
+    </footer>
+
+  </div>
+</body>
+</html>

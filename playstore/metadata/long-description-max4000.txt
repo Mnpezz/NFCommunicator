@@ -1,0 +1,43 @@
+NFCommunicator is an offline Android app for storing one encrypted plain-text message on an NFC tag and reading it back with a shared password.
+
+What it does
+- Reads, writes, and clears app-owned NFC message data.
+- Uses strong password-based encryption (AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation).
+- Works fully offline: no accounts, no cloud sync, no password storage.
+- Supports common NDEF NFC paths and raw MIFARE Classic paths when exposed by the handset.
+
+Core workflow
+- Read mode: hold a tag to the phone, enter password, decrypt and view the message.
+- Write mode: enter password, confirm password, type plain-text message, write encrypted payload to card.
+- Clear mode: erase this app’s message payload from the scanned card.
+
+Security and privacy
+- Plain text is encrypted before writing to card.
+- Encryption uses random salt and nonce per message.
+- The app does not store your shared password.
+- Data remains local to the tag and your devices.
+
+Tag handling details
+- One encrypted message per card.
+- If raw MIFARE Classic is available on the device, the app prioritizes that backend.
+- Otherwise it uses standard NDEF where supported.
+- The app surfaces clear diagnostics for unsupported tags, wrong passwords, unreadable payloads, and tag-loss events.
+
+User experience
+- Dark orange visual theme optimized for readability.
+- Passive NFC detection while app is foregrounded.
+- Read flow can detect and cache encrypted payloads before manual decrypt attempt.
+- Character-count guidance and encrypted size estimates on write screen.
+- Clear status messaging, toast/haptic feedback, and copy-to-clipboard for decrypted text.
+
+Who this is for
+- Teams sharing offline instructions or secrets on physical tags.
+- Field workflows where connectivity is unavailable.
+- Personal NFC use cases where a simple encrypted text payload is preferred over cloud services.
+
+Requirements
+- Android device with NFC support.
+- Shared password known to writer and reader.
+- NFC tag with enough writable capacity for encrypted payload.
+
+NFCommunicator focuses on one thing: secure, offline, plain-text NFC messaging with minimal friction.

@@ -1,0 +1,1 @@
+Offline NFC messenger for encrypted one-message tags: read, write, and clear now

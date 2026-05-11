@@ -1,0 +1,9 @@
+Initial release of NFCommunicator.
+
+Read, write, and clear encrypted text messages on NFC tags — fully offline, no account required.
+
+• AES-256-GCM encryption with PBKDF2-HMAC-SHA256 key derivation
+• Random salt and nonce per message — no password stored
+• NDEF and raw MIFARE Classic tag support
+• Passive tag detection, haptic feedback, copy-to-clipboard
+• Clear diagnostics for wrong passwords and unsupported tags

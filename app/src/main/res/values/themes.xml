@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.NfcCommunicator" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/ember_primary</item>
+        <item name="colorOnPrimary">@color/ember_background</item>
+        <item name="colorPrimaryContainer">@color/ember_primary_dark</item>
+        <item name="colorOnPrimaryContainer">@color/ember_text</item>
+        <item name="android:statusBarColor">@color/ember_primary_dark</item>
+        <item name="android:navigationBarColor">@color/ember_surface</item>
+        <item name="android:windowBackground">@color/ember_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

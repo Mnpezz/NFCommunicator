@@ -1,0 +1,2 @@
+b4c76a9480a922b94bfe498c8502c38ddae4a74eb35675fae693760d6e5be9b0  NFCommunicator-1.0-release.apk
+c4baf5eb3bc97683048dc2de90cf15b8ddbba479175d4c6b02f04b9aafb0bbc5  NFCommunicator-1.0-release.aab

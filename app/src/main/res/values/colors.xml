@@ -1,0 +1,8 @@
+<resources>
+    <color name="ember_primary">#E87722</color>
+    <color name="ember_primary_dark">#9B4C14</color>
+    <color name="ember_surface">#1D130D</color>
+    <color name="ember_background">#140D08</color>
+    <color name="ember_text">#FFE7D2</color>
+    <color name="icon_black">#000000</color>
+</resources>
