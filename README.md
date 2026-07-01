@@ -16,6 +16,9 @@ This implementation now prefers raw `MifareClassic` whenever the scanned tag exp
 
 Raw MIFARE Classic support intentionally skips sector 0 and all sector trailer blocks. That avoids manufacturer data and ACL blocks while still giving the app a contiguous storage region for one encrypted message.
 
+- **NDEF Discovery in Reader Mode**: NFC Reader Mode flags are configured to allow Android to perform standard NDEF/NDEF-formatable tag discovery (allowing compatibility with tags like MIFARE Ultralight that lack raw MIFARE Classic exposure on certain handsets).
+
+
 ## Build
 
 1. Ensure `ANDROID_HOME` points to your SDK, for example `/home/user/Android/Sdk`.
