@@ -1,3 +1,7 @@
+/*
+ * This file has been modified to support NDEF tag operations in NFC Reader Mode.
+ * Modified by mnpezz.
+ */
 package dev.alsatianconsulting.NFCommunicator.domain
 
 import android.nfc.NdefMessage
@@ -27,8 +31,11 @@ object SecureMessageCodec {
     // and is intentionally kept as-is for on-tag format compatibility; changing it would make
     // all existing encrypted tags unreadable.
     private val associatedData = "NFCCommunicator|v1".toByteArray(StandardCharsets.UTF_8)
-    val mimeType: String = "application/vnd.nfccommunicator.secure-message"
+    // Shortened MIME type (app/nc) saves 40 bytes of NDEF overhead on small tags.
+    val mimeType: String = "app/nc"
     private val mimeTypeBytes = mimeType.toByteArray(StandardCharsets.US_ASCII)
+    private const val legacyMimeType = "application/vnd.nfccommunicator.secure-message"
+    private val legacyMimeTypeBytes = legacyMimeType.toByteArray(StandardCharsets.US_ASCII)
     private val mifareMagic = "MFCMSG01".toByteArray(StandardCharsets.US_ASCII)
     private const val mifareHeaderLengthBytes = 12
     // Maximum plausible MIFARE Classic payload: 4 KB total – header. Rejects attacker-crafted
@@ -109,7 +116,7 @@ object SecureMessageCodec {
 
     fun isCompatibleRecord(record: NdefRecord): Boolean =
         record.tnf.toInt() == NdefRecord.TNF_MIME_MEDIA.toInt() &&
-            record.type.contentEquals(mimeTypeBytes)
+            (record.type.contentEquals(mimeTypeBytes) || record.type.contentEquals(legacyMimeTypeBytes))
 
     fun wrapForMifareClassic(encryptedPayload: ByteArray): ByteArray =
         ByteBuffer.allocate(mifareHeaderLengthBytes + encryptedPayload.size)
