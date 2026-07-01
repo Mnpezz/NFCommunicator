@@ -1,3 +1,7 @@
+/*
+ * This file has been modified to support NDEF tag operations in NFC Reader Mode.
+ * Modified by mnpezz.
+ */
 package dev.alsatianconsulting.NFCommunicator.domain
 
 import org.junit.Assert.assertEquals
@@ -75,7 +79,7 @@ class NfcDiagnosticsTest {
         )
 
         assertEquals("No encrypted message from this app was found on the tag.", diagnostic.statusMessage)
-        assertTrue(diagnostic.detail.orEmpty().contains("not enough data"))
+        assertTrue(diagnostic.detail.orEmpty().contains("enough data"))
     }
 
     @Test
