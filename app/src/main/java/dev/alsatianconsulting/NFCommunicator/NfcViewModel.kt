@@ -1,3 +1,7 @@
+/*
+ * This file has been modified to support NDEF tag operations in NFC Reader Mode.
+ * Modified by mnpezz.
+ */
 package dev.alsatianconsulting.NFCommunicator
 
 import android.nfc.Tag
@@ -215,10 +219,6 @@ class NfcViewModel(
             }
 
             state.isProcessing -> Unit
-            cachedReadPayload == null -> {
-                updateReadStatus("Scan a compatible tag first. Cards are detected automatically on this screen.", isError = true)
-            }
-
             state.readPassword.isBlank() -> {
                 updateReadStatus("Enter the shared password to try decrypting the detected tag.", isError = true)
             }
@@ -228,6 +228,10 @@ class NfcViewModel(
                     "The password must be at least $MIN_PASSWORD_LENGTH characters.",
                     isError = true,
                 )
+            }
+
+            cachedReadPayload == null -> {
+                updateReadStatus("Scan a compatible tag first. Cards are detected automatically on this screen.", isError = true)
             }
 
             else -> {
