@@ -1,3 +1,7 @@
+/*
+ * This file has been modified to support NDEF tag operations in NFC Reader Mode.
+ * Modified by mnpezz.
+ */
 package dev.alsatianconsulting.NFCommunicator
 
 import android.content.BroadcastReceiver
@@ -250,7 +254,6 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 NfcAdapter.FLAG_READER_NFC_B or
                 NfcAdapter.FLAG_READER_NFC_F or
                 NfcAdapter.FLAG_READER_NFC_V or
-                NfcAdapter.FLAG_READER_NFC_BARCODE or
-                NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+                NfcAdapter.FLAG_READER_NFC_BARCODE
     }
 }
