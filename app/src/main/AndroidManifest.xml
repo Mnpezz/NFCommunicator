@@ -24,13 +24,38 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop" />
+
+        <activity-alias
+            android:name="dev.alsatianconsulting.nfcommunicator.MainActivity"
+            android:targetActivity=".MainActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+ 
+        <activity-alias
+            android:name="dev.alsatianconsulting.nfcommunicator.SignerActivity"
+            android:targetActivity=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.greenart7c3.nostrsigner.MAIN_ACTIVITY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nostrsigner" />
+            </intent-filter>
+        </activity-alias>
+ 
+        <provider
+            android:name="dev.alsatianconsulting.NFCommunicator.SignerProvider"
+            android:authorities="dev.alsatianconsulting.nfcommunicator.GET_PUBLIC_KEY;dev.alsatianconsulting.nfcommunicator.SIGN_EVENT;dev.alsatianconsulting.nfcommunicator.NIP04_ENCRYPT;dev.alsatianconsulting.nfcommunicator.NIP04_DECRYPT;dev.alsatianconsulting.nfcommunicator.NIP44_ENCRYPT;dev.alsatianconsulting.nfcommunicator.NIP44_DECRYPT;dev.alsatianconsulting.nfcommunicator.DECRYPT_ZAP_EVENT"
+            android:exported="true" />
     </application>
 
 </manifest>

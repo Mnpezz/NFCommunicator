@@ -124,6 +124,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm:0.23.0")
+    testImplementation("org.json:json:20240303")
 
     implementation("fr.acinq.bitcoin:bitcoin-kmp:0.30.0")
     implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.23.0")

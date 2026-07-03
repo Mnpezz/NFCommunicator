@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import dev.alsatianconsulting.NFCommunicator.domain.Bip39Compressor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -449,5 +450,87 @@ class NfcViewModelTest {
         assertTrue(writeAction.isDuress)
         assertEquals("emergency-pw", writeAction.emergencyPassword)
         assertEquals("emergency seed", writeAction.emergencyMessage)
+    }
+
+    // ── Nostr Signer tests ────────────────────────────────────────────────────
+
+    @Test
+    fun setNostrSignerRequest_updatesUiState() {
+        val vm = viewModel()
+        val request = NostrSignerRequest(
+            type = "get_public_key",
+            id = "123",
+            eventJson = null,
+            plaintext = null,
+            ciphertext = null,
+            destPubkey = null,
+            callingPackage = "test.client"
+        )
+        vm.setNostrSignerRequest(request)
+        assertEquals(request, vm.uiState.value.nostrSignerRequest)
+    }
+
+    @Test
+    fun rejectNostrSignerRequest_clearsRequestAndEmitsRejected() {
+        val vm = viewModel()
+        val request = NostrSignerRequest(
+            type = "get_public_key",
+            id = "123",
+            eventJson = null,
+            plaintext = null,
+            ciphertext = null,
+            destPubkey = null,
+            callingPackage = "test.client"
+        )
+        vm.setNostrSignerRequest(request)
+
+        var emittedResult: NostrSignerResultEvent? = null
+        val job = kotlinx.coroutines.MainScope().launch {
+            vm.nostrSignerResults.collect {
+                emittedResult = it
+            }
+        }
+
+        vm.rejectNostrSignerRequest()
+
+        assertNull(vm.uiState.value.nostrSignerRequest)
+        assertTrue(emittedResult is NostrSignerResultEvent.Rejected)
+        assertEquals("123", (emittedResult as NostrSignerResultEvent.Rejected).id)
+
+        job.cancel()
+    }
+
+    @Test
+    fun approveNostrSignerRequest_withPublicKeyRequest_emitsSuccess() {
+        val vm = viewModel()
+        val request = NostrSignerRequest(
+            type = "get_public_key",
+            id = "123",
+            eventJson = null,
+            plaintext = null,
+            ciphertext = null,
+            destPubkey = null,
+            callingPackage = "test.client"
+        )
+        vm.setNostrSignerRequest(request)
+
+        var emittedResult: NostrSignerResultEvent? = null
+        val job = kotlinx.coroutines.MainScope().launch {
+            vm.nostrSignerResults.collect {
+                emittedResult = it
+            }
+        }
+
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val expectedKeys = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(mnemonic)!!
+        vm.approveNostrSignerRequest(mnemonic)
+
+        assertNull(vm.uiState.value.nostrSignerRequest)
+        assertTrue(emittedResult is NostrSignerResultEvent.Success)
+        val success = emittedResult as NostrSignerResultEvent.Success
+        assertEquals("123", success.id)
+        assertEquals(expectedKeys.pubkeyHex, success.result)
+
+        job.cancel()
     }
 }

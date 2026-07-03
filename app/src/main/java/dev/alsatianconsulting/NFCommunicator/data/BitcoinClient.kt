@@ -27,10 +27,20 @@ data class AddressInfo(
 
 object BitcoinClient {
     private const val BASE_URL = "https://mempool.space/api"
+    private const val FALLBACK_URL = "https://blockstream.info/api"
 
     suspend fun fetchAddressInfo(address: String, index: Int): AddressInfo = withContext(Dispatchers.IO) {
-        val balanceUrl = URL("$BASE_URL/address/$address")
-        val utxoUrl = URL("$BASE_URL/address/$address/utxo")
+        return@withContext try {
+            fetchAddressInfoFrom(BASE_URL, address, index)
+        } catch (primary: Exception) {
+            android.util.Log.w("BitcoinClient", "mempool.space failed (${primary.message}), falling back to blockstream.info")
+            fetchAddressInfoFrom(FALLBACK_URL, address, index)
+        }
+    }
+
+    private fun fetchAddressInfoFrom(baseUrl: String, address: String, index: Int): AddressInfo {
+        val balanceUrl = URL("$baseUrl/address/$address")
+        val utxoUrl = URL("$baseUrl/address/$address/utxo")
 
         val balanceConn = balanceUrl.openConnection() as HttpURLConnection
         balanceConn.requestMethod = "GET"
@@ -86,7 +96,7 @@ object BitcoinClient {
             utxoConn.disconnect()
         }
 
-        AddressInfo(
+        return AddressInfo(
             balance = balance,
             isUsed = fundedSum > 0,
             utxos = utxos
@@ -94,7 +104,16 @@ object BitcoinClient {
     }
 
     suspend fun fetchBalance(address: String): Long = withContext(Dispatchers.IO) {
-        val url = URL("$BASE_URL/address/$address")
+        return@withContext try {
+            fetchBalanceFrom(BASE_URL, address)
+        } catch (primary: Exception) {
+            android.util.Log.w("BitcoinClient", "mempool.space failed (${primary.message}), falling back to blockstream.info")
+            fetchBalanceFrom(FALLBACK_URL, address)
+        }
+    }
+
+    private fun fetchBalanceFrom(baseUrl: String, address: String): Long {
+        val url = URL("$baseUrl/address/$address")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = 10000
@@ -104,7 +123,7 @@ object BitcoinClient {
             if (connection.responseCode == 200) {
                 val response = readStream(connection)
                 val json = JSONObject(response)
-                
+
                 val chainStats = json.optJSONObject("chain_stats")
                 val mempoolStats = json.optJSONObject("mempool_stats")
 
@@ -113,7 +132,7 @@ object BitcoinClient {
                 val mempoolFunded = mempoolStats?.optLong("funded_txo_sum") ?: 0L
                 val mempoolSpent = mempoolStats?.optLong("spent_txo_sum") ?: 0L
 
-                (chainFunded + mempoolFunded) - (chainSpent + mempoolSpent)
+                return (chainFunded + mempoolFunded) - (chainSpent + mempoolSpent)
             } else {
                 throw Exception("Failed to fetch address balance: HTTP ${connection.responseCode}")
             }
@@ -123,7 +142,16 @@ object BitcoinClient {
     }
 
     suspend fun fetchUtxos(address: String): List<Utxo> = withContext(Dispatchers.IO) {
-        val url = URL("$BASE_URL/address/$address/utxo")
+        return@withContext try {
+            fetchUtxosFrom(BASE_URL, address)
+        } catch (primary: Exception) {
+            android.util.Log.w("BitcoinClient", "mempool.space failed (${primary.message}), falling back to blockstream.info")
+            fetchUtxosFrom(FALLBACK_URL, address)
+        }
+    }
+
+    private fun fetchUtxosFrom(baseUrl: String, address: String): List<Utxo> {
+        val url = URL("$baseUrl/address/$address/utxo")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = 10000
@@ -143,7 +171,7 @@ object BitcoinClient {
                     val confirmed = status?.optBoolean("confirmed") ?: false
                     utxos.add(Utxo(txid, vout, value, confirmed))
                 }
-                utxos
+                return utxos
             } else {
                 throw Exception("Failed to fetch UTXOs: HTTP ${connection.responseCode}")
             }
@@ -153,7 +181,16 @@ object BitcoinClient {
     }
 
     suspend fun broadcastTransaction(txHex: String): String = withContext(Dispatchers.IO) {
-        val url = URL("$BASE_URL/tx")
+        return@withContext try {
+            broadcastTransactionTo(BASE_URL, txHex)
+        } catch (primary: Exception) {
+            android.util.Log.w("BitcoinClient", "mempool.space broadcast failed (${primary.message}), falling back to blockstream.info")
+            broadcastTransactionTo(FALLBACK_URL, txHex)
+        }
+    }
+
+    private fun broadcastTransactionTo(baseUrl: String, txHex: String): String {
+        val url = URL("$baseUrl/tx")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "POST"
         connection.doOutput = true
@@ -169,7 +206,7 @@ object BitcoinClient {
 
             val responseCode = connection.responseCode
             if (responseCode in 200..299) {
-                readStream(connection).trim()
+                return readStream(connection).trim()
             } else {
                 val errorStream = connection.errorStream
                 val errorMessage = if (errorStream != null) {

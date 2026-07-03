@@ -20,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Switch
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -90,6 +92,7 @@ import dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec
 import dev.alsatianconsulting.NFCommunicator.domain.StorageBackend
 import dev.alsatianconsulting.NFCommunicator.domain.TagInfo
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.material3.RadioButton
 import kotlinx.coroutines.delay
 
@@ -199,7 +202,30 @@ fun NfcCommunicatorApp(
     onGenerateEmergencyMnemonic: () -> Unit = {},
     onUseGeneratedEmergencyMnemonic: () -> Unit = {},
     onClearGeneratedEmergencyMnemonic: () -> Unit = {},
+    onApproveNostrRequestWithCurrent: () -> Unit = {},
+    onRejectNostrRequest: () -> Unit = {},
+    onAutoSignRememberChanged: (Boolean) -> Unit = {},
+    onClearAutoSignRules: () -> Unit = {},
+    onToggleAutoSignKind22242: (Boolean) -> Unit = {},
+    onToggleAutoSignKind10050: (Boolean) -> Unit = {},
+    onToggleAutoSignKind31234: (Boolean) -> Unit = {},
+    onToggleAutoSignKind5: (Boolean) -> Unit = {},
+    onToggleAutoSignNipEncrypt: (Boolean) -> Unit = {},
+    onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {},
 ) {
+    if (uiState.nostrSignerRequest != null) {
+        NostrSignerScreen(
+            uiState = uiState,
+            onReadPasswordChanged = onReadPasswordChanged,
+            onStartRead = onStartRead,
+            onCancelPendingScan = onCancelPendingScan,
+            onApprove = onApproveNostrRequestWithCurrent,
+            onReject = onRejectNostrRequest,
+            onAutoSignRememberChanged = onAutoSignRememberChanged
+        )
+        return
+    }
+
     val scrollState = rememberScrollState()
     val interactionEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
     Scaffold(
@@ -289,7 +315,14 @@ fun NfcCommunicatorApp(
                     onClearCashuError = onClearCashuError,
                     onStartQrScan = onStartQrScan,
                     onSelectAddressType = onSelectAddressType,
-                    onToggleUtxoSelection = onToggleUtxoSelection
+                    onToggleUtxoSelection = onToggleUtxoSelection,
+                    onClearAutoSignRules = onClearAutoSignRules,
+                    onToggleAutoSignKind22242 = onToggleAutoSignKind22242,
+                    onToggleAutoSignKind10050 = onToggleAutoSignKind10050,
+                    onToggleAutoSignKind31234 = onToggleAutoSignKind31234,
+                    onToggleAutoSignKind5 = onToggleAutoSignKind5,
+                    onToggleAutoSignNipEncrypt = onToggleAutoSignNipEncrypt,
+                    onToggleAutoSignNipDecrypt = onToggleAutoSignNipDecrypt
                 )
 
                 AppScreen.Write -> WriteScreen(
@@ -376,7 +409,14 @@ private fun ReadScreen(
     onClearCashuError: () -> Unit = {},
     onStartQrScan: (QrTargetField) -> Unit = {},
     onSelectAddressType: (String) -> Unit = {},
-    onToggleUtxoSelection: (String, Int) -> Unit = { _, _ -> }
+    onToggleUtxoSelection: (String, Int) -> Unit = { _, _ -> },
+    onClearAutoSignRules: () -> Unit = {},
+    onToggleAutoSignKind22242: (Boolean) -> Unit = {},
+    onToggleAutoSignKind10050: (Boolean) -> Unit = {},
+    onToggleAutoSignKind31234: (Boolean) -> Unit = {},
+    onToggleAutoSignKind5: (Boolean) -> Unit = {},
+    onToggleAutoSignNipEncrypt: (Boolean) -> Unit = {},
+    onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {}
 ) {
     val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null
     val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
@@ -497,7 +537,14 @@ private fun ReadScreen(
                 onClearCashuError = onClearCashuError,
                 onStartQrScan = onStartQrScan,
                 onSelectAddressType = onSelectAddressType,
-                onToggleUtxoSelection = onToggleUtxoSelection
+                onToggleUtxoSelection = onToggleUtxoSelection,
+                onClearAutoSignRules = onClearAutoSignRules,
+                onToggleAutoSignKind22242 = onToggleAutoSignKind22242,
+                onToggleAutoSignKind10050 = onToggleAutoSignKind10050,
+                onToggleAutoSignKind31234 = onToggleAutoSignKind31234,
+                onToggleAutoSignKind5 = onToggleAutoSignKind5,
+                onToggleAutoSignNipEncrypt = onToggleAutoSignNipEncrypt,
+                onToggleAutoSignNipDecrypt = onToggleAutoSignNipDecrypt
             )
         }
 
@@ -1619,9 +1666,16 @@ private fun WalletPanel(
     onClearCashuError: () -> Unit,
     onStartQrScan: (QrTargetField) -> Unit,
     onSelectAddressType: (String) -> Unit,
-    onToggleUtxoSelection: (String, Int) -> Unit
+    onToggleUtxoSelection: (String, Int) -> Unit,
+    onClearAutoSignRules: () -> Unit,
+    onToggleAutoSignKind22242: (Boolean) -> Unit,
+    onToggleAutoSignKind10050: (Boolean) -> Unit,
+    onToggleAutoSignKind31234: (Boolean) -> Unit,
+    onToggleAutoSignKind5: (Boolean) -> Unit,
+    onToggleAutoSignNipEncrypt: (Boolean) -> Unit,
+    onToggleAutoSignNipDecrypt: (Boolean) -> Unit
 ) {
-    var activeTab by remember { mutableIntStateOf(0) } // 0: On-chain, 1: Nostr Wallet
+    var activeTab by remember { mutableIntStateOf(0) } // 0: On-chain, 1: Nostr, 2: eCash
 
     Card(
         colors = CardDefaults.cardColors(
@@ -1654,7 +1708,12 @@ private fun WalletPanel(
                     Tab(
                         selected = activeTab == 1,
                         onClick = { activeTab = 1 },
-                        text = { Text("Nostr & eCash", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                        text = { Text("Nostr", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                    )
+                    Tab(
+                        selected = activeTab == 2,
+                        onClick = { activeTab = 2 },
+                        text = { Text("eCash", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
                     )
                 }
                 
@@ -2002,6 +2061,34 @@ private fun WalletPanel(
                     onClearCashuGeneratedToken = onClearCashuGeneratedToken,
                     onClearCashuMeltSuccess = onClearCashuMeltSuccess,
                     onClearCashuError = onClearCashuError,
+                    onStartQrScan = onStartQrScan,
+                    onClearAutoSignRules = onClearAutoSignRules,
+                    onToggleAutoSignKind22242 = onToggleAutoSignKind22242,
+                    onToggleAutoSignKind10050 = onToggleAutoSignKind10050,
+                    onToggleAutoSignKind31234 = onToggleAutoSignKind31234,
+                    onToggleAutoSignKind5 = onToggleAutoSignKind5,
+                    onToggleAutoSignNipEncrypt = onToggleAutoSignNipEncrypt,
+                    onToggleAutoSignNipDecrypt = onToggleAutoSignNipDecrypt
+                )
+            } else if (activeTab == 2) {
+                EcashWalletSection(
+                    uiState = uiState,
+                    onCashuMintUrlChanged = onCashuMintUrlChanged,
+                    onCashuMintAmountInputChanged = onCashuMintAmountInputChanged,
+                    onCashuSendAmountInputChanged = onCashuSendAmountInputChanged,
+                    onCashuReceiveTokenInputChanged = onCashuReceiveTokenInputChanged,
+                    onCashuMeltInvoiceChanged = onCashuMeltInvoiceChanged,
+                    onRequestCashuMintQuote = onRequestCashuMintQuote,
+                    onCheckAndClaimCashuMint = onCheckAndClaimCashuMint,
+                    onClearCashuMintQuote = onClearCashuMintQuote,
+                    onGenerateCashuSendToken = onGenerateCashuSendToken,
+                    onClaimCashuToken = onClaimCashuToken,
+                    onRequestCashuMeltQuote = onRequestCashuMeltQuote,
+                    onConfirmAndExecuteMelt = onConfirmAndExecuteMelt,
+                    onClearCashuMeltQuote = onClearCashuMeltQuote,
+                    onClearCashuGeneratedToken = onClearCashuGeneratedToken,
+                    onClearCashuMeltSuccess = onClearCashuMeltSuccess,
+                    onClearCashuError = onClearCashuError,
                     onStartQrScan = onStartQrScan
                 )
             }
@@ -2029,7 +2116,14 @@ private fun NostrWalletSection(
     onClearCashuGeneratedToken: () -> Unit,
     onClearCashuMeltSuccess: () -> Unit,
     onClearCashuError: () -> Unit,
-    onStartQrScan: (QrTargetField) -> Unit
+    onStartQrScan: (QrTargetField) -> Unit,
+    onClearAutoSignRules: () -> Unit,
+    onToggleAutoSignKind22242: (Boolean) -> Unit,
+    onToggleAutoSignKind10050: (Boolean) -> Unit,
+    onToggleAutoSignKind31234: (Boolean) -> Unit,
+    onToggleAutoSignKind5: (Boolean) -> Unit,
+    onToggleAutoSignNipEncrypt: (Boolean) -> Unit,
+    onToggleAutoSignNipDecrypt: (Boolean) -> Unit
 ) {
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     var showNsec by remember { mutableStateOf(false) }
@@ -2233,515 +2327,1047 @@ private fun NostrWalletSection(
             }
         }
 
-        // Cashu eCash Wallet Card
         Card(
-            modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.1f)
-            )
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+            ),
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Header
+                Text(
+                    text = "Nostr Auto-Sign Settings",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Configure which event types can be signed or encrypted/decrypted automatically without manual authorization when your wallet is unlocked.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+
+                // Kind 22242 Row
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "Cashu Wallet",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        text = "Cashu eCash Wallet (NIP-60)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                }
-
-                // Balance Display
-                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Wallet Balance",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "${uiState.cashuBalanceSat} Sats",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                // Mint configuration dropdown
-                var expanded by remember { mutableStateOf(false) }
-                val popularMints = remember {
-                    listOf(
-                        "https://mint.minibits.cash/Bitcoin" to "Minibits Bitcoin Mint (Most Reliable)",
-                        "https://legend.lnbits.com/cashu/api/v1/4GGejPMW6bXqg2P48W3C5G" to "LNbits Demo Mint",
-                        "https://mint.coinos.io" to "Coinos Mint",
-                        "https://cashu.my2sats.space" to "My2Sats Mint",
-                        "https://8333.space:5000" to "8333.space Mint"
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Client Auth (Kind 22242)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic login/authentication to other Nostr clients.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignKind22242,
+                        onCheckedChange = onToggleAutoSignKind22242
                     )
                 }
 
-                ExposedDropdownMenuBox(
+                // Kind 10050 Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "App Telemetry (Kind 10050)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic background status/telemetry updates.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignKind10050,
+                        onCheckedChange = onToggleAutoSignKind10050
+                    )
+                }
+
+                // Kind 31234 (Drafts) Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Drafts (Kind 31234)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic background draft saves for editors.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignKind31234,
+                        onCheckedChange = onToggleAutoSignKind31234
+                    )
+                }
+
+                // Kind 5 (Deletions) Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Deletions (Kind 5)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic draft deletion when notes are published.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignKind5,
+                        onCheckedChange = onToggleAutoSignKind5
+                    )
+                }
+
+                // Encrypt Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Direct Message Encryption",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic NIP-04/NIP-44 direct message encryption.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignNipEncrypt,
+                        onCheckedChange = onToggleAutoSignNipEncrypt
+                    )
+                }
+
+                // Decrypt Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Direct Message Decryption",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Allows automatic NIP-04/NIP-44 direct message decryption.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoSignNipDecrypt,
+                        onCheckedChange = onToggleAutoSignNipDecrypt
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                OutlinedButton(
+                    onClick = onClearAutoSignRules,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset All Auto-Sign Settings")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EcashWalletSection(
+    uiState: MainUiState,
+    onCashuMintUrlChanged: (String) -> Unit,
+    onCashuMintAmountInputChanged: (String) -> Unit,
+    onCashuSendAmountInputChanged: (String) -> Unit,
+    onCashuReceiveTokenInputChanged: (String) -> Unit,
+    onCashuMeltInvoiceChanged: (String) -> Unit,
+    onRequestCashuMintQuote: () -> Unit,
+    onCheckAndClaimCashuMint: () -> Unit,
+    onClearCashuMintQuote: () -> Unit,
+    onGenerateCashuSendToken: () -> Unit,
+    onClaimCashuToken: () -> Unit,
+    onRequestCashuMeltQuote: () -> Unit,
+    onConfirmAndExecuteMelt: () -> Unit,
+    onClearCashuMeltQuote: () -> Unit,
+    onClearCashuGeneratedToken: () -> Unit,
+    onClearCashuMeltSuccess: () -> Unit,
+    onClearCashuError: () -> Unit,
+    onStartQrScan: (QrTargetField) -> Unit,
+) {
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    // Cashu eCash Wallet Card
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.1f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Cashu Wallet",
+                    tint = MaterialTheme.colorScheme.secondary
+                )
+                Text(
+                    text = "Cashu eCash Wallet (NIP-60)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+
+            // Balance Display
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Wallet Balance",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${uiState.cashuBalanceSat} Sats",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            // Mint configuration dropdown
+            var expanded by remember { mutableStateOf(false) }
+            val popularMints = remember {
+                listOf(
+                    "https://mint.minibits.cash/Bitcoin" to "Minibits Bitcoin Mint (Most Reliable)",
+                    "https://legend.lnbits.com/cashu/api/v1/4GGejPMW6bXqg2P48W3C5G" to "LNbits Demo Mint",
+                    "https://mint.coinos.io" to "Coinos Mint",
+                    "https://cashu.my2sats.space" to "My2Sats Mint",
+                    "https://8333.space:5000" to "8333.space Mint"
+                )
+            }
+
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = !expanded }
+            ) {
+                OutlinedTextField(
+                    value = uiState.cashuMintUrl,
+                    onValueChange = onCashuMintUrlChanged,
+                    label = { Text("Active Mint URL") },
+                    placeholder = { Text("https://mint.minibits.cash/Bitcoin") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().menuAnchor(),
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                )
+                ExposedDropdownMenu(
                     expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
+                    onDismissRequest = { expanded = false }
                 ) {
-                    OutlinedTextField(
-                        value = uiState.cashuMintUrl,
-                        onValueChange = onCashuMintUrlChanged,
-                        label = { Text("Active Mint URL") },
-                        placeholder = { Text("https://8333.space:5000") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        popularMints.forEach { (url, label) ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                                        Text(
-                                            text = label,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = url,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    onCashuMintUrlChanged(url)
-                                    expanded = false
+                    popularMints.forEach { (url, label) ->
+                        DropdownMenuItem(
+                            text = {
+                                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = url,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
-                            )
-                        }
+                            },
+                            onClick = {
+                                onCashuMintUrlChanged(url)
+                                expanded = false
+                            }
+                        )
                     }
                 }
+            }
 
-                // Error and Loading indicators
-                if (uiState.cashuLoading) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().padding(8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.secondary)
-                    }
+            // Error and Loading indicators
+            if (uiState.cashuLoading) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.secondary)
                 }
+            }
 
-                if (uiState.cashuError != null) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+            if (uiState.cashuError != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Error",
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Text(
+                            text = uiState.cashuError ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = onClearCashuError) {
                             Icon(
-                                imageVector = Icons.Default.Error,
-                                contentDescription = "Error",
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss",
                                 tint = MaterialTheme.colorScheme.onErrorContainer
                             )
-                            Text(
-                                text = uiState.cashuError ?: "",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.weight(1f)
+                        }
+                    }
+                }
+            }
+
+            // Sub-operation Selector
+            var ecashOpTab by remember { mutableStateOf(0) }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val tabs = listOf("Mint", "Send", "Receive", "Pay Invoice")
+                tabs.forEachIndexed { index, label ->
+                    val isSelected = ecashOpTab == index
+                    Button(
+                        onClick = { ecashOpTab = index },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = if (isSelected) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            // Sub-operation panels
+            when (ecashOpTab) {
+                0 -> {
+                    // Mint
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Mint eCash (via Lightning)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        if (uiState.cashuMintQuote == null) {
+                            OutlinedTextField(
+                                value = uiState.cashuMintAmountInput,
+                                onValueChange = onCashuMintAmountInputChanged,
+                                label = { Text("Amount (Sats)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
                             )
-                            IconButton(onClick = onClearCashuError) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Dismiss",
-                                    tint = MaterialTheme.colorScheme.onErrorContainer
-                                )
+
+                            Button(
+                                onClick = onRequestCashuMintQuote,
+                                enabled = uiState.cashuMintAmountInput.toLongOrNull()?.let { it > 0 } ?: false,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Request Mint Invoice")
                             }
-                        }
-                    }
-                }
-
-                // Sub-operation Selector
-                var ecashOpTab by remember { mutableStateOf(0) }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val tabs = listOf("Mint", "Send", "Receive", "Pay Invoice")
-                    tabs.forEachIndexed { index, label ->
-                        val isSelected = ecashOpTab == index
-                        Button(
-                            onClick = { ecashOpTab = index },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = if (isSelected) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-
-                // Sub-operation panels
-                when (ecashOpTab) {
-                    0 -> {
-                        // Mint
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                text = "Mint eCash (via Lightning)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            if (uiState.cashuMintQuote == null) {
-                                OutlinedTextField(
-                                    value = uiState.cashuMintAmountInput,
-                                    onValueChange = onCashuMintAmountInputChanged,
-                                    label = { Text("Amount (Sats)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Button(
-                                    onClick = onRequestCashuMintQuote,
-                                    enabled = uiState.cashuMintAmountInput.toLongOrNull()?.let { it > 0 } ?: false,
-                                    modifier = Modifier.fillMaxWidth()
+                        } else {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Request Mint Invoice")
-                                }
-                            } else {
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
+                                    Text(
+                                        text = "Pay this Lightning invoice of ${uiState.cashuMintQuoteAmountSat} sats:",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+
+                                    SelectionContainer {
                                         Text(
-                                            text = "Pay this Lightning invoice of ${uiState.cashuMintQuoteAmountSat} sats:",
-                                            style = MaterialTheme.typography.bodyMedium
+                                            text = uiState.cashuMintQuote?.request ?: "",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            ),
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 5,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-
-                                        SelectionContainer {
-                                            Text(
-                                                text = uiState.cashuMintQuote?.request ?: "",
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                                ),
-                                                color = MaterialTheme.colorScheme.primary,
-                                                maxLines = 5,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Button(
-                                                onClick = {
-                                                    clipboardManager.setText(
-                                                        androidx.compose.ui.text.AnnotatedString(uiState.cashuMintQuote?.request ?: "")
-                                                    )
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.ContentCopy,
-                                                    contentDescription = "Copy Invoice",
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                                Spacer(Modifier.width(4.dp))
-                                                Text("Copy")
-                                            }
-
-                                            Button(
-                                                onClick = onCheckAndClaimCashuMint,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = "Claim",
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                                Spacer(Modifier.width(4.dp))
-                                                Text("Claim")
-                                            }
-                                        }
-
-                                        OutlinedButton(
-                                            onClick = onClearCashuMintQuote,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text("Cancel / Clear")
-                                        }
                                     }
-                                }
-                            }
-                        }
-                    }
-                    1 -> {
-                        // Send
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                text = "Send eCash (Generate Token)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
 
-                            if (uiState.cashuGeneratedToken == null) {
-                                OutlinedTextField(
-                                    value = uiState.cashuSendAmountInput,
-                                    onValueChange = onCashuSendAmountInputChanged,
-                                    label = { Text("Amount (Sats)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Button(
-                                    onClick = onGenerateCashuSendToken,
-                                    enabled = uiState.cashuSendAmountInput.toLongOrNull()?.let { it > 0 && it <= uiState.cashuBalanceSat } ?: false,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Generate eCash Token")
-                                }
-                            } else {
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text(
-                                            text = "Share this token with the recipient:",
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-
-                                        SelectionContainer {
-                                            Text(
-                                                text = uiState.cashuGeneratedToken ?: "",
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                                ),
-                                                color = MaterialTheme.colorScheme.secondary,
-                                                maxLines = 5,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-
                                         Button(
                                             onClick = {
                                                 clipboardManager.setText(
-                                                    androidx.compose.ui.text.AnnotatedString(uiState.cashuGeneratedToken ?: "")
+                                                    androidx.compose.ui.text.AnnotatedString(uiState.cashuMintQuote?.request ?: "")
                                                 )
                                             },
-                                            modifier = Modifier.fillMaxWidth()
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.ContentCopy,
-                                                contentDescription = "Copy Token",
+                                                contentDescription = "Copy Invoice",
                                                 modifier = Modifier.size(16.dp)
                                             )
-                                            Spacer(Modifier.width(8.dp))
-                                            Text("Copy Token")
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Copy")
                                         }
 
-                                        OutlinedButton(
-                                            onClick = onClearCashuGeneratedToken,
-                                            modifier = Modifier.fillMaxWidth()
+                                        Button(
+                                            onClick = onCheckAndClaimCashuMint,
+                                            modifier = Modifier.weight(1f)
                                         ) {
-                                            Text("Done")
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Claim",
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Claim")
                                         }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = onClearCashuMintQuote,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Cancel / Clear")
                                     }
                                 }
                             }
                         }
                     }
-                    2 -> {
-                        // Receive
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                text = "Receive eCash (Paste Token)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                }
+                1 -> {
+                    // Send
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Send eCash (Generate Token)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        if (uiState.cashuGeneratedToken == null) {
+                            OutlinedTextField(
+                                value = uiState.cashuSendAmountInput,
+                                onValueChange = onCashuSendAmountInputChanged,
+                                label = { Text("Amount (Sats)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
                             )
 
+                            Button(
+                                onClick = onGenerateCashuSendToken,
+                                enabled = uiState.cashuSendAmountInput.toLongOrNull()?.let { it > 0 && it <= uiState.cashuBalanceSat } ?: false,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Generate eCash Token")
+                            }
+                        } else {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Share this token with the recipient:",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+
+                                    SelectionContainer {
+                                        Text(
+                                            text = uiState.cashuGeneratedToken ?: "",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            ),
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            maxLines = 5,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            clipboardManager.setText(
+                                                androidx.compose.ui.text.AnnotatedString(uiState.cashuGeneratedToken ?: "")
+                                            )
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copy Token",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Copy Token")
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = onClearCashuGeneratedToken,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Done")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                2 -> {
+                    // Receive
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Receive eCash (Paste Token)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        OutlinedTextField(
+                            value = uiState.cashuReceiveTokenInput,
+                            onValueChange = onCashuReceiveTokenInputChanged,
+                            label = { Text("Cashu Token (starts with cashuA)") },
+                            placeholder = { Text("cashuA...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 4,
+                            trailingIcon = {
+                                QrScanIconButton(onClick = { onStartQrScan(QrTargetField.CashuReceiveToken) })
+                            }
+                        )
+
+                        Button(
+                            onClick = onClaimCashuToken,
+                            enabled = uiState.cashuReceiveTokenInput.trim().startsWith("cashuA"),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Claim Token")
+                        }
+                    }
+                }
+                3 -> {
+                    // Pay Invoice (Melt)
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Pay Lightning Invoice (Melt)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        if (uiState.cashuMeltQuote == null && uiState.cashuMeltSuccessPreimage == null) {
                             OutlinedTextField(
-                                value = uiState.cashuReceiveTokenInput,
-                                onValueChange = onCashuReceiveTokenInputChanged,
-                                label = { Text("Cashu Token (starts with cashuA)") },
-                                placeholder = { Text("cashuA...") },
+                                value = uiState.cashuMeltInvoice,
+                                onValueChange = onCashuMeltInvoiceChanged,
+                                label = { Text("Lightning Invoice (lnbc...)") },
+                                placeholder = { Text("lnbc...") },
                                 modifier = Modifier.fillMaxWidth(),
                                 maxLines = 4,
                                 trailingIcon = {
-                                    QrScanIconButton(onClick = { onStartQrScan(QrTargetField.CashuReceiveToken) })
+                                    QrScanIconButton(onClick = { onStartQrScan(QrTargetField.CashuMeltInvoice) })
                                 }
                             )
 
                             Button(
-                                onClick = onClaimCashuToken,
-                                enabled = uiState.cashuReceiveTokenInput.trim().startsWith("cashuA"),
+                                onClick = onRequestCashuMeltQuote,
+                                enabled = uiState.cashuMeltInvoice.trim().isNotEmpty(),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Claim Token")
+                                Text("Request Pay Quote")
                             }
-                        }
-                    }
-                    3 -> {
-                        // Pay Invoice (Melt)
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                text = "Pay Lightning Invoice (Melt)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            if (uiState.cashuMeltQuote == null && uiState.cashuMeltSuccessPreimage == null) {
-                                OutlinedTextField(
-                                    value = uiState.cashuMeltInvoice,
-                                    onValueChange = onCashuMeltInvoiceChanged,
-                                    label = { Text("Lightning Invoice (lnbc...)") },
-                                    placeholder = { Text("lnbc...") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    maxLines = 4,
-                                    trailingIcon = {
-                                        QrScanIconButton(onClick = { onStartQrScan(QrTargetField.CashuMeltInvoice) })
-                                    }
-                                )
-
-                                Button(
-                                    onClick = onRequestCashuMeltQuote,
-                                    enabled = uiState.cashuMeltInvoice.trim().isNotEmpty(),
-                                    modifier = Modifier.fillMaxWidth()
+                        } else if (uiState.cashuMeltQuote != null) {
+                            val quote = uiState.cashuMeltQuote!!
+                            val total = quote.amount + quote.feeReserve
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Request Pay Quote")
-                                }
-                            } else if (uiState.cashuMeltQuote != null) {
-                                val quote = uiState.cashuMeltQuote!!
-                                val total = quote.amount + quote.feeReserve
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    Text(
+                                        text = "Confirm Payment Detail:",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(text = "Amount: ${quote.amount} Sats", style = MaterialTheme.typography.bodyMedium)
+                                    Text(text = "Fee Reserve: ${quote.feeReserve} Sats", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        text = "Total Max Cost: $total Sats",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text(
-                                            text = "Confirm Payment Detail:",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(text = "Amount: ${quote.amount} Sats", style = MaterialTheme.typography.bodyMedium)
-                                        Text(text = "Fee Reserve: ${quote.feeReserve} Sats", style = MaterialTheme.typography.bodyMedium)
-                                        Text(
-                                            text = "Total Max Cost: $total Sats",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        OutlinedButton(
+                                            onClick = onClearCashuMeltQuote,
+                                            modifier = Modifier.weight(1f)
                                         ) {
-                                            OutlinedButton(
-                                                onClick = onClearCashuMeltQuote,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Cancel")
-                                            }
-
-                                            Button(
-                                                onClick = onConfirmAndExecuteMelt,
-                                                enabled = uiState.cashuBalanceSat >= total,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Confirm & Pay")
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if (uiState.cashuMeltSuccessPreimage != null) {
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Payment Succeeded!",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            text = "Preimage:",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        SelectionContainer {
-                                            Text(
-                                                text = uiState.cashuMeltSuccessPreimage ?: "",
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                                )
-                                            )
+                                            Text("Cancel")
                                         }
 
                                         Button(
-                                            onClick = onClearCashuMeltSuccess,
-                                            modifier = Modifier.fillMaxWidth()
+                                            onClick = onConfirmAndExecuteMelt,
+                                            enabled = uiState.cashuBalanceSat >= total,
+                                            modifier = Modifier.weight(1f)
                                         ) {
-                                            Text("OK")
+                                            Text("Confirm & Pay")
                                         }
+                                    }
+                                }
+                            }
+                        } else if (uiState.cashuMeltSuccessPreimage != null) {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Payment Succeeded!",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "Preimage:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    SelectionContainer {
+                                        Text(
+                                            text = uiState.cashuMeltSuccessPreimage ?: "",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            )
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = onClearCashuMeltSuccess,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("OK")
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+    }
+}
+
+@Composable
+fun NostrSignerScreen(
+    uiState: MainUiState,
+    onReadPasswordChanged: (String) -> Unit,
+    onStartRead: () -> Unit,
+    onCancelPendingScan: () -> Unit,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+    onAutoSignRememberChanged: (Boolean) -> Unit
+) {
+    val request = uiState.nostrSignerRequest ?: return
+    val scrollState = rememberScrollState()
+    val isLocked = uiState.readMessage == null
+    val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null
+    val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
+
+    var rawEventExpanded by remember { mutableStateOf(false) }
+
+    val eventDetails = remember(request.eventJson) {
+        runCatching {
+            request.eventJson?.let { jsonStr ->
+                val obj = org.json.JSONObject(jsonStr)
+                val kind = obj.optInt("kind", -1)
+                val content = obj.optString("content", "")
+                val tags = obj.optJSONArray("tags")?.toString() ?: "[]"
+                val kindDesc = when (kind) {
+                    0 -> "Metadata (NIP-01)"
+                    1 -> "Short Text Note (NIP-01)"
+                    3 -> "Follow List (NIP-02)"
+                    4 -> "Encrypted Direct Message (NIP-04)"
+                    6 -> "Repost (NIP-18)"
+                    7 -> "Reaction (NIP-25)"
+                    10002 -> "Relay List Metadata (NIP-65)"
+                    else -> "Kind $kind"
+                }
+                Triple(kindDesc, content, tags)
+            }
+        }.getOrNull()
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            // Header / App Name / Title
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Nostr Signer",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Secure Hardware-backed Authorization",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Calling Package Info Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "REQUEST FROM APPLICATION",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = request.callingPackage ?: "Unknown Client",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // Operation Type Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Operation:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Text(
+                                text = request.type.uppercase(),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Request details display
+                    when (request.type) {
+                        "get_public_key" -> {
+                            Text(
+                                text = "The application wants to read your public key/identity to establish connection.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        "sign_event" -> {
+                            if (eventDetails != null) {
+                                Text(
+                                    text = "Event: ${eventDetails.first}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                if (eventDetails.second.isNotEmpty()) {
+                                    Text(
+                                        text = "Content: ${eventDetails.second}",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                }
+                                Text(
+                                    text = "Tags: ${eventDetails.third}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Text(
+                                    text = "The application wants to sign a Nostr event.",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            // Expandable raw JSON block
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { rawEventExpanded = !rawEventExpanded },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Raw Event JSON Details",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Icon(
+                                    imageVector = if (rawEventExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Toggle Raw Event JSON"
+                                )
+                            }
+                            if (rawEventExpanded) {
+                                SelectionContainer {
+                                    Text(
+                                        text = request.eventJson ?: "{}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier
+                                            .padding(top = 8.dp)
+                                            .fillMaxWidth()
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                            .padding(8.dp)
+                                    )
+                                }
+                            }
+                        }
+                        "nip04_encrypt" -> {
+                            Text(
+                                text = "Recipient Pubkey: ${request.destPubkey}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Plaintext to encrypt: ${request.plaintext}",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        "nip04_decrypt" -> {
+                            Text(
+                                text = "Sender Pubkey: ${request.destPubkey}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Ciphertext to decrypt: ${request.ciphertext}",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            }
+
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Wallet State Card (Security Check)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isLocked) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
+                ),
+                border = androidx.compose.foundation.BorderStroke(
+                    width = 1.dp,
+                    color = if (isLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (isLocked) "🔒 Keys Locked" else "🔓 Keys Unlocked",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (isLocked) {
+                        Text(
+                            text = "To authorize this request, enter your tag password and tap your offline NFC card to the phone.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        PasswordField(
+                            value = uiState.readPassword,
+                            onValueChange = onReadPasswordChanged,
+                            label = "Tag Password",
+                            enabled = inputEnabled,
+                            isError = uiState.readPassword.isNotEmpty() && uiState.readPassword.length < MIN_PASSWORD_LENGTH,
+                            supportingText = if (uiState.readPassword.isNotEmpty() && uiState.readPassword.length < MIN_PASSWORD_LENGTH) "At least $MIN_PASSWORD_LENGTH characters required." else null
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = onStartRead,
+                                enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Scan Card")
+                            }
+                            OutlinedButton(
+                                onClick = onReject,
+                                enabled = !actionsDisabled,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Reject")
+                            }
+                        }
+                        if (uiState.pendingScanAction != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = onCancelPendingScan,
+                                enabled = !uiState.isProcessing,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Cancel pending scan")
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Identity: ${uiState.nostrNpub}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = onApprove,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF4CAF50), // Green for authorize
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text("Authorize")
+                            }
+                            OutlinedButton(
+                                onClick = onReject,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Reject")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Pending Scan prompt panel
+            uiState.pendingPrompt?.let { prompt ->
+                StatusPanel(
+                    status = StatusMessage(prompt, isError = false)
+                )
             }
         }
     }

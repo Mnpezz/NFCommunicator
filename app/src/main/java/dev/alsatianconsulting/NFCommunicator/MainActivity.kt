@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.os.Build
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel.initContext(this)
         // FLAG_SECURE prevents the decrypted message from appearing in screenshots, screen
         // recordings, and the recent-apps thumbnail — important for a privacy-sensitive messenger.
         // Disabled only in the screenshot build type so Play Store captures can be taken.
@@ -70,6 +72,34 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 viewModel.feedbackEvents.collect(::showOperationFeedback)
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.nostrSignerResults.collect { event ->
+                    val resultIntent = Intent()
+                    when (event) {
+                        is NostrSignerResultEvent.Success -> {
+                            resultIntent.putExtra("signature", event.result)
+                            resultIntent.putExtra("result", event.result)
+                            resultIntent.putExtra("package", packageName)
+                            event.event?.let { resultIntent.putExtra("event", it) }
+                            event.id?.let { resultIntent.putExtra("id", it) }
+                        }
+                        is NostrSignerResultEvent.Rejected -> {
+                            resultIntent.putExtra("rejected", true)
+                            event.id?.let { resultIntent.putExtra("id", it) }
+                        }
+                    }
+                    val resultCode = when (event) {
+                        is NostrSignerResultEvent.Success -> android.app.Activity.RESULT_OK
+                        is NostrSignerResultEvent.Rejected -> android.app.Activity.RESULT_CANCELED
+                    }
+                    setResult(resultCode, resultIntent)
+                    finish()
+                }
+            }
+        }
+
+        handleIncomingIntent(intent)
 
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -150,6 +180,16 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     onStartQrScan = viewModel::startQrScan,
                     onCancelQrScan = viewModel::cancelQrScan,
                     onCompleteQrScan = viewModel::completeQrScan,
+                    onApproveNostrRequestWithCurrent = viewModel::approveNostrSignerRequestWithCurrentWallet,
+                    onRejectNostrRequest = viewModel::rejectNostrSignerRequest,
+                    onAutoSignRememberChanged = {},
+                    onClearAutoSignRules = viewModel::clearAutoSignRules,
+                    onToggleAutoSignKind22242 = viewModel::setAutoSignKind22242,
+                    onToggleAutoSignKind10050 = viewModel::setAutoSignKind10050,
+                    onToggleAutoSignKind31234 = viewModel::setAutoSignKind31234,
+                    onToggleAutoSignKind5 = viewModel::setAutoSignKind5,
+                    onToggleAutoSignNipEncrypt = viewModel::setAutoSignNipEncrypt,
+                    onToggleAutoSignNipDecrypt = viewModel::setAutoSignNipDecrypt
                 )
             }
         }
@@ -300,6 +340,75 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         val idPart = tag.id?.joinToString(separator = "") { byte -> "%02x".format(byte) }.orEmpty()
         val techPart = tag.techList.joinToString(",")
         return "$idPart|$techPart"
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent) {
+        val request = parseNostrSignerRequest(intent, callingPackage)
+        android.util.Log.d("NfcMainActivity", "handleIncomingIntent: request type=${request?.type}, id=${request?.id}, eventJson=${request?.eventJson}")
+        if (request != null) {
+            viewModel.setNostrSignerRequest(request)
+        }
+    }
+
+    private fun safeGetQueryParameter(uri: Uri?, key: String): String? {
+        if (uri == null) return null
+        if (uri.isHierarchical) {
+            return uri.getQueryParameter(key)
+        }
+        val ssp = uri.schemeSpecificPart ?: return null
+        val queryIndex = ssp.indexOf('?')
+        if (queryIndex == -1) return null
+        val queryString = ssp.substring(queryIndex + 1)
+        return queryString.split('&')
+            .map { it.split('=', limit = 2) }
+            .firstOrNull { it.size == 2 && it[0] == key }
+            ?.get(1)
+            ?.let { Uri.decode(it) }
+    }
+
+    private fun parseNostrSignerRequest(intent: Intent, callingPackage: String?): NostrSignerRequest? {
+        val uri = intent.data
+        val type = intent.getStringExtra("type") ?: safeGetQueryParameter(uri, "type")
+        if (type == null) {
+            return null
+        }
+
+        val id = intent.getStringExtra("id") ?: safeGetQueryParameter(uri, "id")
+        val ssp = uri?.schemeSpecificPart?.substringBefore("?")
+
+        var eventJson: String? = intent.getStringExtra("event")
+        if (eventJson == null && type == "sign_event") {
+            eventJson = ssp ?: safeGetQueryParameter(uri, "event")
+        }
+
+        var plaintext: String? = null
+        var ciphertext: String? = null
+        if (type == "nip04_encrypt" || type == "nip44_encrypt") {
+            plaintext = intent.getStringExtra("content") ?: ssp ?: safeGetQueryParameter(uri, "content")
+        } else if (type == "nip04_decrypt" || type == "nip44_decrypt") {
+            ciphertext = intent.getStringExtra("content") ?: ssp ?: safeGetQueryParameter(uri, "content")
+        }
+
+        val destPubkey = intent.getStringExtra("pubKey")
+            ?: intent.getStringExtra("pubkey")
+            ?: safeGetQueryParameter(uri, "pubKey")
+            ?: safeGetQueryParameter(uri, "pubkey")
+
+        return NostrSignerRequest(
+            type = type,
+            id = id,
+            eventJson = eventJson,
+            plaintext = plaintext,
+            ciphertext = ciphertext,
+            destPubkey = destPubkey,
+            callingPackage = callingPackage
+        )
     }
 
     private companion object {

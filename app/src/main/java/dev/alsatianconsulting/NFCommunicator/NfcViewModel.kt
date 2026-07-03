@@ -5,6 +5,7 @@
 package dev.alsatianconsulting.NFCommunicator
 
 import android.nfc.Tag
+import android.content.Context
 import java.math.BigInteger
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -46,6 +47,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,6 +83,27 @@ data class UserFeedbackEvent(
     val message: String,
     val tone: FeedbackTone,
 )
+
+data class NostrSignerRequest(
+    val type: String,
+    val id: String?,
+    val eventJson: String?,
+    val plaintext: String?,
+    val ciphertext: String?,
+    val destPubkey: String?,
+    val callingPackage: String?
+)
+
+sealed interface NostrSignerResultEvent {
+    data class Success(
+        val type: String,
+        val id: String?,
+        val result: String,
+        val event: String? = null
+    ) : NostrSignerResultEvent
+
+    data class Rejected(val id: String?) : NostrSignerResultEvent
+}
 
 sealed interface PendingScanAction {
     data class Read(val password: String) : PendingScanAction
@@ -191,7 +215,7 @@ data class MainUiState(
 
     // Cashu Wallet State
     val cashuBalanceSat: Long = 0L,
-    val cashuMintUrl: String = "https://8333.space:5000",
+    val cashuMintUrl: String = "https://mint.minibits.cash/Bitcoin",
     val cashuProofs: List<CashuProof> = emptyList(),
     val cashuMintQuote: MintQuoteResponse? = null,
     val cashuMintQuoteAmountSat: Long = 0L,
@@ -204,6 +228,14 @@ data class MainUiState(
     val cashuSendAmountInput: String = "",
     val cashuReceiveTokenInput: String = "",
     val cashuGeneratedToken: String? = null,
+    val nostrSignerRequest: NostrSignerRequest? = null,
+    val autoSignRules: Set<String> = emptySet(),
+    val autoSignKind22242: Boolean = false,
+    val autoSignKind10050: Boolean = false,
+    val autoSignKind31234: Boolean = false,
+    val autoSignKind5: Boolean = false,
+    val autoSignNipEncrypt: Boolean = false,
+    val autoSignNipDecrypt: Boolean = false
 ) {
     val canScanNfc: Boolean
         get() = nfcAvailable && nfcEnabled
@@ -246,14 +278,139 @@ class NfcViewModel(
     private val tagService = NfcTagService()
     private val _uiState = MutableStateFlow(restoreUiState())
     private val _feedbackEvents = MutableSharedFlow<UserFeedbackEvent>(extraBufferCapacity = 4)
+    private val _nostrSignerResults = Channel<NostrSignerResultEvent>(Channel.BUFFERED)
     private var cachedReadPayload: ByteArray? = null
     private var readPasswordAttemptJob: Job? = null
+    private var appContext: Context? = null
+
+    fun initContext(context: Context) {
+        if (appContext == null) {
+            val app = context.applicationContext
+            appContext = app
+            val prefs = app.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            val rules = prefs.getStringSet("rules", emptySet()) ?: emptySet()
+            val kind22242 = prefs.getBoolean("kind_22242", false)
+            val kind10050 = prefs.getBoolean("kind_10050", false)
+            val kind31234 = prefs.getBoolean("kind_31234", false)
+            val kind5 = prefs.getBoolean("kind_5", false)
+            val nipEncrypt = prefs.getBoolean("nip_encrypt", false)
+            val nipDecrypt = prefs.getBoolean("nip_decrypt", false)
+            _uiState.update { it.copy(
+                autoSignRules = rules,
+                autoSignKind22242 = kind22242,
+                autoSignKind10050 = kind10050,
+                autoSignKind31234 = kind31234,
+                autoSignKind5 = kind5,
+                autoSignNipEncrypt = nipEncrypt,
+                autoSignNipDecrypt = nipDecrypt
+            ) }
+        }
+    }
+
+    fun setAutoSignKind22242(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("kind_22242", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignKind22242 = enabled) }
+    }
+
+    fun setAutoSignKind10050(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("kind_10050", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignKind10050 = enabled) }
+    }
+
+    fun setAutoSignKind31234(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("kind_31234", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignKind31234 = enabled) }
+    }
+
+    fun setAutoSignKind5(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("kind_5", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignKind5 = enabled) }
+    }
+
+    fun setAutoSignNipEncrypt(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("nip_encrypt", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignNipEncrypt = enabled) }
+    }
+
+    fun setAutoSignNipDecrypt(enabled: Boolean) {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("nip_decrypt", enabled).apply()
+        }
+        _uiState.update { it.copy(autoSignNipDecrypt = enabled) }
+    }
+
+    fun clearAutoSignRules() {
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences("auto_sign_prefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .remove("rules")
+                .putBoolean("kind_22242", false)
+                .putBoolean("kind_10050", false)
+                .putBoolean("kind_31234", false)
+                .putBoolean("kind_5", false)
+                .putBoolean("nip_encrypt", false)
+                .putBoolean("nip_decrypt", false)
+                .apply()
+        }
+        _uiState.update { it.copy(
+            autoSignRules = emptySet(),
+            autoSignKind22242 = false,
+            autoSignKind10050 = false,
+            autoSignKind31234 = false,
+            autoSignKind5 = false,
+            autoSignNipEncrypt = false,
+            autoSignNipDecrypt = false
+        ) }
+    }
+
+    private fun getAutoSignRuleKey(callingPackage: String, requestType: String, eventKind: Int?): String {
+        return "$callingPackage:$requestType:${eventKind ?: ""}"
+    }
+
+    private fun getRequestEventKind(request: NostrSignerRequest): Int? {
+        if (request.type != "sign_event" || request.eventJson == null) return null
+        return try {
+            org.json.JSONObject(request.eventJson).optInt("kind", -1).takeIf { it != -1 }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
     val feedbackEvents = _feedbackEvents.asSharedFlow()
+    val nostrSignerResults = _nostrSignerResults.receiveAsFlow()
 
     init {
         viewModelScope.launch {
             uiState.collect(::persistRestorableState)
+        }
+        val restoredMessage = getInMemoryReadMessage()
+        if (restoredMessage != null) {
+            val activeType = _uiState.value.activeAddressType
+            val addresses = _uiState.value.derivedAddressesList?.get(activeType) ?: emptyList()
+            if (addresses.isNotEmpty()) {
+                fetchBitcoinBalanceAndUtxos(addresses)
+            } else {
+                _uiState.value.derivedAddresses?.get(activeType)?.let { addr ->
+                    fetchBitcoinBalanceAndUtxos(addr)
+                }
+            }
         }
     }
 
@@ -569,7 +726,7 @@ class NfcViewModel(
                 )
                 _uiState.update { it.copy(breezConnected = true) }
                 onFetchBreezBalance()
-                _feedbackEvents.emit(UserFeedbackEvent("Breez Lightning Wallet connected successfully", FeedbackTone.Success))
+                _feedbackEvents.emit(UserFeedbackEvent("Wallet connected successfully", FeedbackTone.Success))
             } catch (e: Exception) {
                 _uiState.update { it.copy(breezError = e.message ?: "Failed to connect to Breez SDK") }
                 _feedbackEvents.emit(UserFeedbackEvent("Breez Connection Failed: ${e.message}", FeedbackTone.Error))
@@ -604,7 +761,7 @@ class NfcViewModel(
             } catch (e: Throwable) {
                 // Ignore
             }
-            _feedbackEvents.emit(UserFeedbackEvent("Breez Lightning Wallet disconnected", FeedbackTone.Success))
+            _feedbackEvents.emit(UserFeedbackEvent("Wallet disconnected", FeedbackTone.Success))
         }
     }
 
@@ -1617,6 +1774,13 @@ class NfcViewModel(
                     lastTagInfo = result.tagInfo,
                 )
             }
+
+            if (result.isSuccess && result.decryptedMessage != null) {
+                val request = _uiState.value.nostrSignerRequest
+                if (request != null && nostrKeys != null) {
+                    approveNostrSignerRequest(nostrKeys.privkeyHex)
+                }
+            }
         }
     }
 
@@ -2369,6 +2533,12 @@ class NfcViewModel(
         val restoredProofsJson = savedStateHandle.get<String>(KEY_CASHU_PROOFS).orEmpty()
         val restoredProofs = parseProofsJson(restoredProofsJson)
         val balance = restoredProofs.sumOf { it.amount }
+
+        val restoredReadMessage = getInMemoryReadMessage()
+        val derivedList = restoredReadMessage?.let { deriveBitcoinAddressesAll(it) }
+        val derived = restoredReadMessage?.let { deriveBitcoinAddresses(it) }
+        val nostrKeys = restoredReadMessage?.let { NostrEngine.deriveNostrKeys(it) }
+
         return MainUiState(
             selectedScreen = savedStateHandle.get<String>(keySelectedScreen).toAppScreen(),
             writeMessage = restoredWriteMessage,
@@ -2383,7 +2553,14 @@ class NfcViewModel(
             lastTagInfo = restoreLastTagInfo(),
             cashuMintUrl = restoredMintUrl,
             cashuProofs = restoredProofs,
-            cashuBalanceSat = balance
+            cashuBalanceSat = balance,
+            readMessage = restoredReadMessage,
+            derivedAddresses = derived,
+            derivedAddressesList = derivedList,
+            nostrNsec = nostrKeys?.nsec,
+            nostrNpub = nostrKeys?.npub,
+            nostrPubkeyHex = nostrKeys?.pubkeyHex,
+            readStatus = if (restoredReadMessage != null) StatusMessage("Wallet decrypted and unlocked.") else defaultReadStatus()
         )
     }
 
@@ -2410,6 +2587,7 @@ class NfcViewModel(
         persistLastTagInfo(state.lastTagInfo)
         savedStateHandle[KEY_CASHU_MINT_URL] = state.cashuMintUrl
         savedStateHandle[KEY_CASHU_PROOFS] = serializeProofsJson(state.cashuProofs)
+        setInMemoryReadMessage(state.readMessage)
     }
 
     private fun persistLastTagInfo(tagInfo: TagInfo?) {
@@ -2438,7 +2616,112 @@ class NfcViewModel(
     private fun String.toStorageBackend(): StorageBackend? =
         runCatching { StorageBackend.valueOf(this) }.getOrNull()
 
-    private companion object {
+    fun setNostrSignerRequest(request: NostrSignerRequest) {
+        _uiState.update { it.copy(nostrSignerRequest = request) }
+        
+        val kind = getRequestEventKind(request)
+        val isAutoApproved = when (request.type) {
+            "sign_event" -> {
+                when (kind) {
+                    22242 -> _uiState.value.autoSignKind22242
+                    10050 -> _uiState.value.autoSignKind10050
+                    31234 -> _uiState.value.autoSignKind31234
+                    5 -> _uiState.value.autoSignKind5
+                    else -> false
+                }
+            }
+            "nip04_encrypt", "nip44_encrypt" -> _uiState.value.autoSignNipEncrypt
+            "nip04_decrypt", "nip44_decrypt" -> _uiState.value.autoSignNipDecrypt
+            else -> false
+        }
+        
+        if (isAutoApproved) {
+            val mnemonic = _uiState.value.readMessage
+            if (mnemonic != null) {
+                val keys = NostrEngine.deriveNostrKeys(mnemonic)
+                if (keys != null) {
+                    approveNostrSignerRequest(keys.privkeyHex)
+                }
+            }
+        }
+    }
+
+    fun clearNostrSignerRequest() {
+        _uiState.update { it.copy(nostrSignerRequest = null) }
+    }
+
+    fun rejectNostrSignerRequest() {
+        val request = _uiState.value.nostrSignerRequest ?: return
+        viewModelScope.launch {
+            _nostrSignerResults.send(NostrSignerResultEvent.Rejected(request.id))
+            clearNostrSignerRequest()
+        }
+    }
+
+    fun approveNostrSignerRequestWithCurrentWallet() {
+        val mnemonic = _uiState.value.readMessage ?: return
+        val keys = NostrEngine.deriveNostrKeys(mnemonic) ?: return
+        approveNostrSignerRequest(keys.privkeyHex)
+    }
+
+    fun approveNostrSignerRequest(privateKeyHex: String) {
+        val request = _uiState.value.nostrSignerRequest ?: return
+        viewModelScope.launch {
+            try {
+                val resultString: String
+                var signedEventJson: String? = null
+
+                when (request.type) {
+                    "get_public_key" -> {
+                        val keys = NostrEngine.deriveNostrKeys(privateKeyHex)
+                        resultString = keys?.pubkeyHex ?: ""
+                    }
+                    "sign_event" -> {
+                        val eventJson = request.eventJson ?: throw IllegalArgumentException("Missing event JSON")
+                        val (sigHex, signedJson) = NostrEngine.signEvent(eventJson, privateKeyHex)
+                        resultString = sigHex
+                        signedEventJson = signedJson
+                    }
+                    "nip04_encrypt" -> {
+                        val plaintext = request.plaintext ?: throw IllegalArgumentException("Missing plaintext")
+                        val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
+                        resultString = NostrEngine.nip04Encrypt(plaintext, destPubkey, privateKeyHex)
+                    }
+                    "nip04_decrypt" -> {
+                        val ciphertext = request.ciphertext ?: throw IllegalArgumentException("Missing ciphertext")
+                        val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
+                        resultString = NostrEngine.nip04Decrypt(ciphertext, destPubkey, privateKeyHex)
+                    }
+                    "nip44_encrypt" -> {
+                        val plaintext = request.plaintext ?: throw IllegalArgumentException("Missing plaintext")
+                        val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
+                        resultString = NostrEngine.nip44Encrypt(plaintext, destPubkey, privateKeyHex)
+                    }
+                    "nip44_decrypt" -> {
+                        val ciphertext = request.ciphertext ?: throw IllegalArgumentException("Missing ciphertext")
+                        val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
+                        resultString = NostrEngine.nip44Decrypt(ciphertext, destPubkey, privateKeyHex)
+                    }
+                    else -> throw IllegalArgumentException("Unknown request type: ${request.type}")
+                }
+
+
+                _nostrSignerResults.send(
+                    NostrSignerResultEvent.Success(
+                        type = request.type,
+                        id = request.id,
+                        result = resultString,
+                        event = signedEventJson
+                    )
+                )
+                clearNostrSignerRequest()
+            } catch (e: Exception) {
+                _feedbackEvents.emit(UserFeedbackEvent("Nostr operation failed: ${e.message}", FeedbackTone.Error))
+            }
+        }
+    }
+
+    companion object {
         const val readPasswordAttemptDelayMs = 300L
         const val keySelectedScreen = "selected_screen"
         const val keyWriteMessage = "write_message"
@@ -2450,6 +2733,14 @@ class NfcViewModel(
         const val keyLastTagTechnologies = "last_tag_technologies"
         const val KEY_CASHU_MINT_URL = "cashu_mint_url"
         const val KEY_CASHU_PROOFS = "cashu_proofs_json"
+
+        @Volatile
+        private var inMemoryReadMessage: String? = null
+
+        fun getInMemoryReadMessage(): String? = inMemoryReadMessage
+        fun setInMemoryReadMessage(message: String?) {
+            inMemoryReadMessage = message
+        }
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
