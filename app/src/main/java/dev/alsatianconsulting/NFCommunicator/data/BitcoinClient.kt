@@ -44,8 +44,8 @@ object BitcoinClient {
 
         val balanceConn = balanceUrl.openConnection() as HttpURLConnection
         balanceConn.requestMethod = "GET"
-        balanceConn.connectTimeout = 10000
-        balanceConn.readTimeout = 10000
+        balanceConn.connectTimeout = 5000
+        balanceConn.readTimeout = 5000
 
         var fundedSum = 0L
         var balance = 0L
@@ -72,8 +72,8 @@ object BitcoinClient {
 
         val utxoConn = utxoUrl.openConnection() as HttpURLConnection
         utxoConn.requestMethod = "GET"
-        utxoConn.connectTimeout = 10000
-        utxoConn.readTimeout = 10000
+        utxoConn.connectTimeout = 5000
+        utxoConn.readTimeout = 5000
 
         val utxos = mutableListOf<Utxo>()
         try {
@@ -116,8 +116,8 @@ object BitcoinClient {
         val url = URL("$baseUrl/address/$address")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        connection.connectTimeout = 10000
-        connection.readTimeout = 10000
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
 
         try {
             if (connection.responseCode == 200) {
@@ -154,8 +154,8 @@ object BitcoinClient {
         val url = URL("$baseUrl/address/$address/utxo")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        connection.connectTimeout = 10000
-        connection.readTimeout = 10000
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
 
         try {
             if (connection.responseCode == 200) {
@@ -194,8 +194,8 @@ object BitcoinClient {
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "POST"
         connection.doOutput = true
-        connection.connectTimeout = 10000
-        connection.readTimeout = 10000
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
         connection.setRequestProperty("Content-Type", "text/plain")
 
         try {
