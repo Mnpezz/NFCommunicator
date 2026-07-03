@@ -1,6 +1,6 @@
 # NFCommunicator
 
-Offline Android app for one-message NFC cards. The app reads, writes, and clears only its own encrypted NDEF or raw MIFARE Classic payload formats.
+A secure, offline NFC messaging and cryptographic key storage tool. Encrypt, write, read, and erase messages directly on physical NFC tags (NDEF or raw MIFARE Classic) without cloud dependencies. Configured as a privacy-focused Bitcoin wallet with automated HD address rotation, SegWit/Taproot/Silent Payments support, Shamir's Secret Sharing (SSS) split-key backups, Nostr identity derivation (NIP-06), and Cashu eCash integration (NIP-60/61).
 
 ## Key Features
 
