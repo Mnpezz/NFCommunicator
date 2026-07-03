@@ -1,3 +1,7 @@
+/*
+ * This file has been modified to support NDEF tag operations in NFC Reader Mode.
+ * Modified by mnpezz.
+ */
 package dev.alsatianconsulting.NFCommunicator.ui.theme
 
 import androidx.compose.material3.MaterialTheme
@@ -10,40 +14,40 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 private val DarkColors = darkColorScheme(
-    primary = EmberPrimary,
-    onPrimary = EmberBlack,
-    primaryContainer = EmberAccentDeep,
-    onPrimaryContainer = EmberText,
-    secondary = EmberPrimaryBright,
-    onSecondary = EmberBlack,
-    secondaryContainer = EmberSurfaceVariant,
-    onSecondaryContainer = EmberText,
-    tertiary = EmberAccent,
-    onTertiary = EmberBlack,
-    tertiaryContainer = EmberSurfaceHigh,
-    onTertiaryContainer = EmberText,
-    background = EmberBackground,
-    onBackground = EmberText,
-    surface = EmberSurface,
-    onSurface = EmberText,
-    surfaceVariant = EmberSurfaceVariant,
-    onSurfaceVariant = EmberTextMuted,
-    outline = EmberOutline,
-    error = EmberPrimaryBright,
-    onError = EmberBlack,
-    errorContainer = EmberAccentDeep,
-    onErrorContainer = EmberText,
+    primary = BitcoinOrange,
+    onPrimary = BitcoinBlack,
+    primaryContainer = BitcoinOrangeMuted,
+    onPrimaryContainer = BitcoinText,
+    secondary = BitcoinOrangeBright,
+    onSecondary = BitcoinBlack,
+    secondaryContainer = BitcoinSurfaceVariant,
+    onSecondaryContainer = BitcoinText,
+    tertiary = BitcoinGold,
+    onTertiary = BitcoinBlack,
+    tertiaryContainer = BitcoinSurfaceHigh,
+    onTertiaryContainer = BitcoinText,
+    background = BitcoinBackground,
+    onBackground = BitcoinText,
+    surface = BitcoinSurface,
+    onSurface = BitcoinText,
+    surfaceVariant = BitcoinSurfaceVariant,
+    onSurfaceVariant = BitcoinTextMuted,
+    outline = BitcoinOutline,
+    error = BitcoinOrangeBright,
+    onError = BitcoinBlack,
+    errorContainer = BitcoinOrangeMuted,
+    onErrorContainer = BitcoinText,
 )
 
 private val AppTypography = Typography(
     headlineSmall = TextStyle(
-        fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.SemiBold,
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
-        lineHeight = 32.sp,
+        lineHeight = 34.sp,
     ),
     titleMedium = TextStyle(
-        fontFamily = FontFamily.Serif,
+        fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 24.sp,

@@ -19,6 +19,9 @@ import javax.crypto.spec.SecretKeySpec
 
 object SecureMessageCodec {
     private const val formatVersion: Byte = 1
+    private const val formatVersionEntropy: Byte = 2
+    private const val formatVersionShare: Byte = 3
+    private const val formatVersionDuress: Byte = 4
     private const val keyLengthBits = 256
     private const val gcmTagLengthBits = 128
     private const val gcmTagLengthBytes = gcmTagLengthBits / 8
@@ -65,6 +68,123 @@ object SecureMessageCodec {
         }
     }
 
+    fun encryptEntropyToPayload(entropy: ByteArray, password: String): ByteArray {
+        require(entropy.size == 16 || entropy.size == 32) {
+            "Entropy must be exactly 16 or 32 bytes"
+        }
+        val salt = ByteArray(saltLengthBytes).also(secureRandom::nextBytes)
+        val nonce = ByteArray(nonceLengthBytes).also(secureRandom::nextBytes)
+        val key = deriveKey(password, salt)
+
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
+            cipher.updateAAD(associatedData)
+            val ciphertext = cipher.doFinal(entropy)
+
+            ByteBuffer.allocate(1 + saltLengthBytes + nonceLengthBytes + ciphertext.size)
+                .put(formatVersionEntropy)
+                .put(salt)
+                .put(nonce)
+                .put(ciphertext)
+                .array()
+        } catch (error: GeneralSecurityException) {
+            throw IllegalStateException("Unable to encrypt the NFC seed payload.", error)
+        }
+    }
+
+    fun encryptShareToPayload(share: ByteArray, password: String): ByteArray {
+        val salt = ByteArray(saltLengthBytes).also(secureRandom::nextBytes)
+        val nonce = ByteArray(nonceLengthBytes).also(secureRandom::nextBytes)
+        val key = deriveKey(password, salt)
+
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
+            cipher.updateAAD(associatedData)
+            val ciphertext = cipher.doFinal(share)
+
+            ByteBuffer.allocate(1 + saltLengthBytes + nonceLengthBytes + ciphertext.size)
+                .put(formatVersionShare)
+                .put(salt)
+                .put(nonce)
+                .put(ciphertext)
+                .array()
+        } catch (error: GeneralSecurityException) {
+            throw IllegalStateException("Unable to encrypt the SSS share.", error)
+        }
+    }
+
+    fun encryptDuressToPayload(
+        mainPlainText: String,
+        mainPassword: String,
+        duressPlainText: String,
+        duressPassword: String
+    ): ByteArray {
+        val payload1 = if (isMnemonic(mainPlainText)) {
+            val entropy = Bip39Compressor.mnemonicToEntropy(Bip39Compressor.cleanAndSplitMnemonic(mainPlainText))
+            encryptEntropyToPayload(entropy, mainPassword)
+        } else {
+            encryptToPayload(mainPlainText, mainPassword)
+        }
+
+        val payload2 = if (isMnemonic(duressPlainText)) {
+            val entropy = Bip39Compressor.mnemonicToEntropy(Bip39Compressor.cleanAndSplitMnemonic(duressPlainText))
+            encryptEntropyToPayload(entropy, duressPassword)
+        } else {
+            encryptToPayload(duressPlainText, duressPassword)
+        }
+
+        return ByteBuffer.allocate(1 + 2 + payload1.size + 2 + payload2.size)
+            .put(formatVersionDuress)
+            .putShort(payload1.size.toShort())
+            .put(payload1)
+            .putShort(payload2.size.toShort())
+            .put(payload2)
+            .array()
+    }
+
+    private fun isMnemonic(text: String): Boolean {
+        val words = Bip39Compressor.cleanAndSplitMnemonic(text)
+        return (words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess
+    }
+
+    fun decryptSharePayload(payload: ByteArray, password: String): ByteArray {
+        if (payload.size < 1 + saltLengthBytes + nonceLengthBytes + gcmTagLengthBytes) {
+            throw InvalidPayloadException("The NFC payload is too short.")
+        }
+
+        val buffer = ByteBuffer.wrap(payload)
+        val version = buffer.get()
+        if (version != formatVersionShare) {
+            throw InvalidPayloadException("Unsupported NFC share payload version.")
+        }
+
+        val salt = ByteArray(saltLengthBytes)
+        buffer.get(salt)
+        val nonce = ByteArray(nonceLengthBytes)
+        buffer.get(nonce)
+        val ciphertext = ByteArray(buffer.remaining())
+        buffer.get(ciphertext)
+
+        if (ciphertext.size < gcmTagLengthBytes) {
+            throw InvalidPayloadException("The NFC payload is truncated.")
+        }
+
+        val key = deriveKey(password, salt)
+
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
+            cipher.updateAAD(associatedData)
+            cipher.doFinal(ciphertext)
+        } catch (error: AEADBadTagException) {
+            throw InvalidPasswordException(error)
+        } catch (error: GeneralSecurityException) {
+            throw IllegalStateException("Unable to decrypt the SSS share.", error)
+        }
+    }
+
     fun decryptPayload(payload: ByteArray, password: String): String {
         if (payload.size < 1 + saltLengthBytes + nonceLengthBytes + gcmTagLengthBytes) {
             throw InvalidPayloadException("The NFC payload is too short.")
@@ -72,7 +192,36 @@ object SecureMessageCodec {
 
         val buffer = ByteBuffer.wrap(payload)
         val version = buffer.get()
-        if (version != formatVersion) {
+        if (version == formatVersionDuress) {
+            if (payload.size < 5) {
+                throw InvalidPayloadException("The duress payload is too short.")
+            }
+            val len1 = buffer.short.toInt() and 0xFFFF
+            if (payload.size < 3 + len1 + 2) {
+                throw InvalidPayloadException("The duress payload is truncated.")
+            }
+            val payload1 = ByteArray(len1)
+            buffer.get(payload1)
+
+            val len2 = buffer.short.toInt() and 0xFFFF
+            if (buffer.remaining() < len2) {
+                throw InvalidPayloadException("The duress payload is truncated.")
+            }
+            val payload2 = ByteArray(len2)
+            buffer.get(payload2)
+
+            try {
+                return decryptPayload(payload1, password)
+            } catch (error: InvalidPasswordException) {
+                try {
+                    return decryptPayload(payload2, password)
+                } catch (innerError: InvalidPasswordException) {
+                    throw innerError
+                }
+            }
+        }
+
+        if (version != formatVersion && version != formatVersionEntropy) {
             throw InvalidPayloadException("Unsupported NFC payload version.")
         }
 
@@ -93,7 +242,13 @@ object SecureMessageCodec {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
             cipher.updateAAD(associatedData)
-            String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
+            val decryptedBytes = cipher.doFinal(ciphertext)
+            if (version == formatVersionEntropy) {
+                val words = Bip39Compressor.entropyToMnemonic(decryptedBytes)
+                words.joinToString(" ")
+            } else {
+                String(decryptedBytes, StandardCharsets.UTF_8)
+            }
         } catch (error: AEADBadTagException) {
             throw InvalidPasswordException(error)
         } catch (error: GeneralSecurityException) {
@@ -161,6 +316,11 @@ object SecureMessageCodec {
     }
 
     fun estimateEncryptedPayloadSize(plainText: String): Int {
+        val words = Bip39Compressor.cleanAndSplitMnemonic(plainText)
+        if ((words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess) {
+            val entropySize = if (words.size == 12) 16 else 32
+            return encryptionOverheadBytes + entropySize
+        }
         val plainTextBytes = plainText.toByteArray(StandardCharsets.UTF_8).size
         return estimateEncryptedPayloadSize(plainTextBytes)
     }

@@ -116,8 +116,25 @@ class NfcTagService {
         return readPayloadFromNdef(tag, ndef)
     }
 
-    fun writeEncryptedMessage(tag: Tag, password: String, message: String): NfcOperationResult {
-        val encryptedPayload = SecureMessageCodec.encryptToPayload(message, password)
+    fun writeEncryptedMessage(
+        tag: Tag,
+        password: String,
+        message: String,
+        isDuress: Boolean = false,
+        emergencyPassword: String = "",
+        emergencyMessage: String = ""
+    ): NfcOperationResult {
+        val encryptedPayload = if (isDuress) {
+            SecureMessageCodec.encryptDuressToPayload(message, password, emergencyMessage, emergencyPassword)
+        } else {
+            val words = Bip39Compressor.cleanAndSplitMnemonic(message)
+            if ((words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess) {
+                val entropy = Bip39Compressor.mnemonicToEntropy(words)
+                SecureMessageCodec.encryptEntropyToPayload(entropy, password)
+            } else {
+                SecureMessageCodec.encryptToPayload(message, password)
+            }
+        }
         if (MifareClassic.get(tag) != null) {
             Log.i(logTag, "write backend=MIFARE_CLASSIC_RAW techs=${describeTag(tag)}")
             return writeToMifareClassic(tag, encryptedPayload)
@@ -150,6 +167,44 @@ class NfcTagService {
             errorResult(tag, "Unable to format or write this tag.")
         } catch (error: FormatException) {
             errorResult(tag, "Android rejected the encrypted payload format for this tag.")
+        } finally {
+            closeQuietly(formatable)
+        }
+    }
+
+    fun writeRawPayload(tag: Tag, payload: ByteArray): NfcOperationResult {
+        if (MifareClassic.get(tag) != null) {
+            Log.i(logTag, "write raw backend=MIFARE_CLASSIC_RAW techs=${describeTag(tag)}")
+            return writeToMifareClassic(tag, payload)
+        }
+
+        val ndef = Ndef.get(tag)
+        if (ndef != null) {
+            val ndefMessage = SecureMessageCodec.createNdefMessage(payload)
+            Log.i(logTag, "write raw backend=NDEF techs=${describeTag(tag)}")
+            return writeToFormattedTag(tag, ndef, ndefMessage, ndefMessage.toByteArray().size)
+        }
+
+        val formatable = NdefFormatable.get(tag)
+            ?: return errorResult(tag, NfcDiagnostics.unsupportedWrite(describeTechnologies(tag)))
+
+        return try {
+            val ndefMessage = SecureMessageCodec.createNdefMessage(payload)
+            formatable.connect()
+            formatable.format(ndefMessage)
+            successResult(
+                tagInfo = buildTagInfo(
+                    tag = tag,
+                    capacityBytes = null,
+                    isWritable = true,
+                    storageBackend = StorageBackend.Ndef,
+                ),
+                statusMessage = "Raw payload written to the newly formatted tag as NDEF.",
+            )
+        } catch (error: IOException) {
+            errorResult(tag, "Unable to format or write this tag.")
+        } catch (error: FormatException) {
+            errorResult(tag, "Android rejected the raw payload format for this tag.")
         } finally {
             closeQuietly(formatable)
         }
