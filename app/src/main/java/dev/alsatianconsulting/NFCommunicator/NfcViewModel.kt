@@ -2529,7 +2529,12 @@ class NfcViewModel(
 
     private fun restoreUiState(): MainUiState {
         val restoredWriteMessage = savedStateHandle.get<String>(keyWriteMessage).orEmpty()
-        val restoredMintUrl = savedStateHandle.get<String>(KEY_CASHU_MINT_URL) ?: "https://8333.space:5000"
+        val savedMintUrl = savedStateHandle.get<String>(KEY_CASHU_MINT_URL)
+        // Migrate users who had the old default 8333.space mint saved
+        val restoredMintUrl = when {
+            savedMintUrl == null || savedMintUrl == "https://8333.space:5000" -> "https://mint.minibits.cash/Bitcoin"
+            else -> savedMintUrl
+        }
         val restoredProofsJson = savedStateHandle.get<String>(KEY_CASHU_PROOFS).orEmpty()
         val restoredProofs = parseProofsJson(restoredProofsJson)
         val balance = restoredProofs.sumOf { it.amount }
