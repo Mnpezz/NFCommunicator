@@ -1,6 +1,7 @@
 package dev.alsatianconsulting.NFCommunicator.domain
 
 import fr.acinq.bitcoin.Base58Check
+import fr.acinq.bitcoin.Bech32
 import fr.acinq.bitcoin.DeterministicWallet
 import fr.acinq.bitcoin.KeyPath
 import fr.acinq.bitcoin.PrivateKey
@@ -71,6 +72,29 @@ object KeyParser {
         }
 
         return null
+    }
+
+    /**
+     * Returns true if the input looks like a Nostr nsec bech32 private key.
+     */
+    fun isNsec(input: String): Boolean =
+        input.trim().startsWith("nsec1", ignoreCase = true)
+
+    /**
+     * Parses a Nostr nsec1... bech32 private key and returns a PrivateKey.
+     * Returns null if the input is not a valid nsec.
+     */
+    fun parseNsec(input: String): PrivateKey? {
+        val clean = input.trim()
+        if (!clean.startsWith("nsec1", ignoreCase = true)) return null
+        return try {
+            // Bech32.decodeBytes returns Triple(hrp, data, encoding)
+            val (hrp, bytes, _) = Bech32.decodeBytes(clean)
+            if (hrp != "nsec" || bytes.size != 32) return null
+            PrivateKey(bytes)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun hexToBytes(hex: String): ByteArray {

@@ -10,6 +10,7 @@ import java.math.BigInteger
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import dev.alsatianconsulting.NFCommunicator.data.AddressInfo
 import dev.alsatianconsulting.NFCommunicator.data.BitcoinClient
 import dev.alsatianconsulting.NFCommunicator.data.Utxo
 import dev.alsatianconsulting.NFCommunicator.domain.Bip39Compressor
@@ -1065,24 +1066,22 @@ class NfcViewModel(
         _uiState.update { it.copy(isFetchingBalance = true) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val deferredInfos = coroutineScope {
-                    addresses.mapIndexed { index, address ->
-                        async {
-                            BitcoinClient.fetchAddressInfo(address, index)
-                        }
-                    }
+                // Sequential gap-limit scan: stop at the first unused address.
+                // Typical wallets have 0–2 used addresses so this is far faster
+                // than fetching all 10 in parallel and waiting for them all.
+                val infos = mutableListOf<AddressInfo>()
+                for ((index, address) in addresses.withIndex()) {
+                    val info = BitcoinClient.fetchAddressInfo(address, index)
+                    infos.add(info)
+                    if (!info.isUsed) break  // gap-limit reached
                 }
-                val infos = deferredInfos.awaitAll()
 
                 val totalBalance = infos.sumOf { it.balance }
                 val allUtxos = infos.flatMap { it.utxos }
 
-                // Find the first index that is NOT used (never funded).
-                // If all are used, default to index 0.
                 val firstUnusedIndex = infos.indexOfFirst { !it.isUsed }.let { if (it == -1) 0 else it }
 
                 _uiState.update { state ->
-                    // Derive active addresses for each type at firstUnusedIndex
                     val nextDerivedAddresses = state.derivedAddressesList?.mapValues { entry ->
                         entry.value.getOrElse(firstUnusedIndex) { entry.value.first() }
                     }
@@ -1478,11 +1477,14 @@ class NfcViewModel(
                         val derivedList = result.decryptedMessage?.let { deriveBitcoinAddressesAll(it) }
                         val derived = result.decryptedMessage?.let { deriveBitcoinAddresses(it) }
                         val activeType = state.activeAddressType
-                        val addresses = derivedList?.get(activeType) ?: emptyList()
+                        val validType = derivedList?.keys?.let { keys ->
+                            if (activeType in keys) activeType else keys.firstOrNull() ?: activeType
+                        } ?: activeType
+                        val addresses = derivedList?.get(validType) ?: emptyList()
                         if (addresses.isNotEmpty()) {
                             fetchBitcoinBalanceAndUtxos(addresses)
                         } else {
-                            derived?.get(activeType)?.let { addr ->
+                            derived?.get(validType)?.let { addr ->
                                 fetchBitcoinBalanceAndUtxos(addr)
                             }
                         }
@@ -1492,6 +1494,7 @@ class NfcViewModel(
                             readMessage = result.decryptedMessage,
                             derivedAddresses = derived,
                             derivedAddressesList = derivedList,
+                            activeAddressType = validType,
                             nostrNsec = nostrKeys?.nsec,
                             nostrNpub = nostrKeys?.npub,
                             nostrPubkeyHex = nostrKeys?.pubkeyHex,
@@ -1751,11 +1754,14 @@ class NfcViewModel(
             val derivedList = result.decryptedMessage?.let { deriveBitcoinAddressesAll(it) }
             val derived = result.decryptedMessage?.let { deriveBitcoinAddresses(it) }
             val activeType = _uiState.value.activeAddressType
-            val addresses = derivedList?.get(activeType) ?: emptyList()
+            val validType = derivedList?.keys?.let { keys ->
+                if (activeType in keys) activeType else keys.firstOrNull() ?: activeType
+            } ?: activeType
+            val addresses = derivedList?.get(validType) ?: emptyList()
             if (addresses.isNotEmpty()) {
                 fetchBitcoinBalanceAndUtxos(addresses)
             } else {
-                derived?.get(activeType)?.let { addr ->
+                derived?.get(validType)?.let { addr ->
                     fetchBitcoinBalanceAndUtxos(addr)
                 }
             }
@@ -1767,6 +1773,7 @@ class NfcViewModel(
                     readMessage = result.decryptedMessage,
                     derivedAddresses = derived,
                     derivedAddressesList = derivedList,
+                    activeAddressType = validType,
                     nostrNsec = nostrKeys?.nsec,
                     nostrNpub = nostrKeys?.npub,
                     nostrPubkeyHex = nostrKeys?.pubkeyHex,
@@ -1809,7 +1816,16 @@ class NfcViewModel(
         val clean = inputStr.trim()
         if (clean.isEmpty()) return null
 
-        // 1. Try parsing as a raw private key first
+        // 1. nsec → Nostr Taproot only
+        val nsecPrivKey = KeyParser.parseNsec(clean)
+        if (nsecPrivKey != null) {
+            return try {
+                val pubkey = nsecPrivKey.publicKey()
+                mapOf("Nostr Taproot (nsec)" to pubkey.p2trAddress(Block.LivenetGenesisBlock.hash))
+            } catch (e: Exception) { null }
+        }
+
+        // 2. Other raw private key (WIF/Hex/xprv) → all 4 script types
         val parsedPrivKey = KeyParser.parsePrivateKey(clean)
         if (parsedPrivKey != null) {
             return try {
@@ -1825,7 +1841,7 @@ class NfcViewModel(
             }
         }
 
-        // 2. Fall back to BIP-39 mnemonic derivation
+        // 3. BIP-39 mnemonic → 4 HD types + Nostr Taproot (5th)
         val words = clean.lowercase().split(Regex("\\s+"))
         if (words.size != 12 && words.size != 24) return null
         return try {
@@ -1839,7 +1855,7 @@ class NfcViewModel(
                 "Taproot (BIP-86)" to "m/86'/0'/0'/0/0"
             )
 
-            paths.mapValues { (_, path) ->
+            val hdAddresses = paths.mapValues { (_, path) ->
                 val derived = DeterministicWallet.derivePrivateKey(master, path)
                 val pubkey = derived.publicKey
                 when {
@@ -1849,6 +1865,12 @@ class NfcViewModel(
                     else -> pubkey.p2pkhAddress(Block.LivenetGenesisBlock.hash)
                 }
             }
+
+            // 5th type: Taproot from the NIP-06 Nostr key derived from this seed
+            val nostrDerived = DeterministicWallet.derivePrivateKey(master, NostrEngine.NOSTR_DERIVATION_PATH)
+            val nostrTaproot = nostrDerived.publicKey.p2trAddress(Block.LivenetGenesisBlock.hash)
+
+            hdAddresses + mapOf("Nostr Taproot" to nostrTaproot)
         } catch (e: Exception) {
             null
         }
@@ -1858,7 +1880,16 @@ class NfcViewModel(
         val clean = inputStr.trim()
         if (clean.isEmpty()) return null
 
-        // 1. Try parsing as a raw private key first
+        // 1. nsec → Nostr Taproot only (single address, no HD tree)
+        val nsecPrivKey = KeyParser.parseNsec(clean)
+        if (nsecPrivKey != null) {
+            return try {
+                val pubkey = nsecPrivKey.publicKey()
+                mapOf("Nostr Taproot (nsec)" to listOf(pubkey.p2trAddress(Block.LivenetGenesisBlock.hash)))
+            } catch (e: Exception) { null }
+        }
+
+        // 2. Other raw private key (WIF/Hex/xprv) → single address per type (no HD sweep)
         val parsedPrivKey = KeyParser.parsePrivateKey(clean)
         if (parsedPrivKey != null) {
             return try {
@@ -1874,7 +1905,7 @@ class NfcViewModel(
             }
         }
 
-        // 2. Fall back to BIP-39 mnemonic derivation
+        // 3. BIP-39 mnemonic → 4 HD types (10 addresses each) + Nostr Taproot (1 address)
         val words = clean.lowercase().split(Regex("\\s+"))
         if (words.size != 12 && words.size != 24) return null
         return try {
@@ -1888,7 +1919,7 @@ class NfcViewModel(
                 "Taproot (BIP-86)" to "m/86'/0'/0'/0/"
             )
 
-            basePaths.mapValues { (_, basePath) ->
+            val hdAddresses = basePaths.mapValues { (_, basePath) ->
                 (0..9).map { index ->
                     val path = "$basePath$index"
                     val derived = DeterministicWallet.derivePrivateKey(master, path)
@@ -1901,6 +1932,12 @@ class NfcViewModel(
                     }
                 }
             }
+
+            // 5th type: Taproot from the NIP-06 Nostr key (single address, deterministic)
+            val nostrDerived = DeterministicWallet.derivePrivateKey(master, NostrEngine.NOSTR_DERIVATION_PATH)
+            val nostrTaproot = nostrDerived.publicKey.p2trAddress(Block.LivenetGenesisBlock.hash)
+
+            hdAddresses + mapOf("Nostr Taproot" to listOf(nostrTaproot))
         } catch (e: Exception) {
             null
         }

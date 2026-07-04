@@ -7,7 +7,6 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import javax.crypto.spec.ChaCha20ParameterSpec
 
 data class NostrKeyPair(
     val nsec: String,
@@ -26,7 +25,27 @@ object NostrEngine {
         val clean = input.trim()
         if (clean.isEmpty()) return null
 
-        // 1. Try parsing as a raw private key first
+        // 1. nsec bech32 → reconstruct key pair directly
+        val nsecPrivKey = KeyParser.parseNsec(clean)
+        if (nsecPrivKey != null) {
+            return try {
+                val privBytes = nsecPrivKey.value.toByteArray()
+                val pubkey = nsecPrivKey.publicKey()
+                val pubBytes = pubkey.value.toByteArray()
+                val xOnlyPubBytes = pubBytes.sliceArray(1..32)
+
+                NostrKeyPair(
+                    nsec = clean, // keep the original nsec the user stored
+                    npub = Bech32.encodeBytes("npub", xOnlyPubBytes, Bech32.Encoding.Bech32),
+                    pubkeyHex = ByteVector(xOnlyPubBytes).toHex(),
+                    privkeyHex = ByteVector(privBytes).toHex()
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        // 2. Other raw private key (WIF/Hex/xprv) → derive nsec/npub
         val parsedPrivKey = KeyParser.parsePrivateKey(clean)
         if (parsedPrivKey != null) {
             return try {
@@ -308,11 +327,12 @@ object NostrEngine {
         // Pad Plaintext
         val paddedPlaintext = pad(plaintext.toByteArray(Charsets.UTF_8))
 
-        // Encrypt with ChaCha20 (RFC 7539 uses counter=0)
+        // Encrypt with ChaCha20 (counter starts at 0)
         val cipher = Cipher.getInstance("ChaCha20")
         val keySpec = SecretKeySpec(chachaKey, "ChaCha20")
-        val paramSpec = javax.crypto.spec.ChaCha20ParameterSpec(chachaNonce, 0)
-        cipher.init(Cipher.ENCRYPT_MODE, keySpec, paramSpec)
+        // IvParameterSpec is used instead of ChaCha20ParameterSpec because
+        // ChaCha20ParameterSpec requires API 33+; IvParameterSpec works on API 26+.
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, javax.crypto.spec.IvParameterSpec(chachaNonce))
         val ciphertext = cipher.doFinal(paddedPlaintext)
 
         // Calculate HMAC-SHA256 over nonce + ciphertext
@@ -371,8 +391,9 @@ object NostrEngine {
         // Decrypt with ChaCha20
         val cipher = Cipher.getInstance("ChaCha20")
         val keySpec = SecretKeySpec(chachaKey, "ChaCha20")
-        val paramSpec = javax.crypto.spec.ChaCha20ParameterSpec(chachaNonce, 0)
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, paramSpec)
+        // IvParameterSpec is used instead of ChaCha20ParameterSpec because
+        // ChaCha20ParameterSpec requires API 33+; IvParameterSpec works on API 26+.
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.IvParameterSpec(chachaNonce))
         val paddedPlaintext = cipher.doFinal(ciphertext)
 
         // Unpad Plaintext

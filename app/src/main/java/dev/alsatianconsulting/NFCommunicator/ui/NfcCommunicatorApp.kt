@@ -75,6 +75,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCodeScanner
 import dev.alsatianconsulting.NFCommunicator.AppScreen
 import dev.alsatianconsulting.NFCommunicator.MIN_PASSWORD_LENGTH
@@ -844,7 +845,8 @@ private fun WriteScreen(
     val mnemonicCheckResult = runCatching { Bip39Compressor.mnemonicToEntropy(words) }
     val isWriteMnemonic = (words.size == 12 || words.size == 24) && mnemonicCheckResult.isSuccess
     val mnemonicValidationError = mnemonicCheckResult.exceptionOrNull()?.message
-    val isPrivateKey = KeyParser.parsePrivateKey(uiState.writeMessage) != null
+    val isNsecKey = KeyParser.isNsec(uiState.writeMessage)
+    val isPrivateKey = !isNsecKey && KeyParser.parsePrivateKey(uiState.writeMessage) != null
 
     val context = LocalContext.current
 
@@ -1006,6 +1008,39 @@ private fun WriteScreen(
                         )
                         Text(
                             text = "You entered ${words.size} words, but validation failed: ${mnemonicValidationError ?: "unknown error"}. It will be written as raw plain text and will likely exceed your NFC tag's capacity.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        }
+
+        if (isNsecKey) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFEDE7F6), // Light purple background
+                    contentColor = Color(0xFF4527A0)   // Deep purple text
+                ),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "Nostr Key",
+                        tint = Color(0xFF4527A0)
+                    )
+                    Column {
+                        Text(
+                            text = "Nostr Identity Key (nsec) Detected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Your Nostr Taproot Bitcoin address will be shown after scanning your tag. No HD seed phrase — only one address is derived.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -1738,40 +1773,66 @@ private fun WalletPanel(
                     color = MaterialTheme.colorScheme.primary
                 )
 
-                // Address Type selection dropdown
-                var addressDropdownExpanded by remember { mutableStateOf(false) }
-                val addressTypes = listOf(
-                    "Legacy (BIP-44)",
-                    "Nested SegWit (BIP-49)",
-                    "Native SegWit (BIP-84)",
-                    "Taproot (BIP-86)"
-                )
+                // Address Type selection dropdown — driven by available types from the wallet
+                val availableAddressTypes = uiState.derivedAddressesList?.keys?.toList()
+                    ?: listOf("Legacy (BIP-44)", "Nested SegWit (BIP-49)", "Native SegWit (BIP-84)", "Taproot (BIP-86)")
+                val isSingleType = availableAddressTypes.size == 1
 
-                ExposedDropdownMenuBox(
-                    expanded = addressDropdownExpanded,
-                    onExpandedChange = { addressDropdownExpanded = !addressDropdownExpanded }
-                ) {
-                    OutlinedTextField(
-                        readOnly = true,
-                        value = uiState.activeAddressType,
-                        onValueChange = {},
-                        label = { Text("Active Address Type") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = addressDropdownExpanded) },
-                        colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = addressDropdownExpanded,
-                        onDismissRequest = { addressDropdownExpanded = false }
+                if (isSingleType) {
+                    // nsec wallet: just show the type as a label, no dropdown needed
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp, MaterialTheme.colorScheme.outline
+                        )
                     ) {
-                        addressTypes.forEach { selectionOption ->
-                            DropdownMenuItem(
-                                text = { Text(selectionOption) },
-                                onClick = {
-                                    onSelectAddressType(selectionOption)
-                                    addressDropdownExpanded = false
-                                }
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(18.dp)
                             )
+                            Text(
+                                text = availableAddressTypes.first(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+                } else {
+                    var addressDropdownExpanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(
+                        expanded = addressDropdownExpanded,
+                        onExpandedChange = { addressDropdownExpanded = !addressDropdownExpanded }
+                    ) {
+                        OutlinedTextField(
+                            readOnly = true,
+                            value = uiState.activeAddressType,
+                            onValueChange = {},
+                            label = { Text("Active Address Type") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = addressDropdownExpanded) },
+                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                            modifier = Modifier.fillMaxWidth().menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = addressDropdownExpanded,
+                            onDismissRequest = { addressDropdownExpanded = false }
+                        ) {
+                            availableAddressTypes.forEach { selectionOption ->
+                                DropdownMenuItem(
+                                    text = { Text(selectionOption) },
+                                    onClick = {
+                                        onSelectAddressType(selectionOption)
+                                        addressDropdownExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
