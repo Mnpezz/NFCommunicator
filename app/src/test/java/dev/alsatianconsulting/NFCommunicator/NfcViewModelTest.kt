@@ -533,4 +533,50 @@ class NfcViewModelTest {
 
         job.cancel()
     }
+
+    @Test
+    fun closeWallet_clearsCashuProofsAndQuotes() {
+        val vm = viewModel()
+        val field = NfcViewModel::class.java.getDeclaredField("_uiState")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val stateFlow = field.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<MainUiState>
+        stateFlow.value = stateFlow.value.copy(
+            cashuProofs = listOf(dev.alsatianconsulting.NFCommunicator.domain.CashuProof(100L, "id", "secret", "C")),
+            cashuBalanceSat = 100L,
+            cashuMintQuoteAmountSat = 50L
+        )
+        assertEquals(100L, vm.uiState.value.cashuBalanceSat)
+        assertEquals(1, vm.uiState.value.cashuProofs.size)
+
+        vm.closeWallet()
+
+        assertEquals(0L, vm.uiState.value.cashuBalanceSat)
+        assertTrue(vm.uiState.value.cashuProofs.isEmpty())
+        assertEquals(0L, vm.uiState.value.cashuMintQuoteAmountSat)
+    }
+
+    @Test
+    fun approveNostrSignerRequest_withMismatchedExpectedPubKey_failsAndEnablesSwitchAccount() {
+        val vm = viewModel()
+        val request = NostrSignerRequest(
+            type = "sign_event",
+            id = "123",
+            eventJson = "{\"pubkey\":\"different_pubkey\"}",
+            plaintext = null,
+            ciphertext = null,
+            destPubkey = null,
+            callingPackage = "test.client",
+            currentUser = "different_pubkey"
+        )
+        vm.setNostrSignerRequest(request)
+        assertFalse(vm.uiState.value.showSwitchAccount)
+
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        vm.approveNostrSignerRequest(mnemonic)
+
+        // Request shouldn't be cleared, and showSwitchAccount should be true
+        assertEquals(request, vm.uiState.value.nostrSignerRequest)
+        assertTrue(vm.uiState.value.showSwitchAccount)
+    }
 }

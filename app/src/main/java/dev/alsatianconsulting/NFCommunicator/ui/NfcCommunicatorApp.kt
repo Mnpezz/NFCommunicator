@@ -213,6 +213,7 @@ fun NfcCommunicatorApp(
     onToggleAutoSignKind5: (Boolean) -> Unit = {},
     onToggleAutoSignNipEncrypt: (Boolean) -> Unit = {},
     onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {},
+    onDismissNostrError: () -> Unit = {}
 ) {
     if (uiState.nostrSignerRequest != null) {
         NostrSignerScreen(
@@ -222,7 +223,9 @@ fun NfcCommunicatorApp(
             onCancelPendingScan = onCancelPendingScan,
             onApprove = onApproveNostrRequestWithCurrent,
             onReject = onRejectNostrRequest,
-            onAutoSignRememberChanged = onAutoSignRememberChanged
+            onAutoSignRememberChanged = onAutoSignRememberChanged,
+            onSwitchAccount = onCloseWallet,
+            onDismissError = onDismissNostrError
         )
         return
     }
@@ -3116,15 +3119,58 @@ fun NostrSignerScreen(
     onCancelPendingScan: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
-    onAutoSignRememberChanged: (Boolean) -> Unit
+    onAutoSignRememberChanged: (Boolean) -> Unit,
+    onSwitchAccount: () -> Unit = {},
+    onDismissError: () -> Unit = {}
 ) {
     val request = uiState.nostrSignerRequest ?: return
     val scrollState = rememberScrollState()
     val isLocked = uiState.readMessage == null
-    val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null
-    val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
+    val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null || uiState.nostrSignerError != null
+    val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null && uiState.nostrSignerError == null
 
     var rawEventExpanded by remember { mutableStateOf(false) }
+
+    if (uiState.nostrSignerError != null) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = onDismissError) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Decryption/Signing Error",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+
+                    Text(
+                        text = uiState.nostrSignerError,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+
+                    Button(
+                        onClick = onDismissError,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Close")
+                    }
+                }
+            }
+        }
+    }
 
     val eventDetails = remember(request.eventJson) {
         runCatching {
@@ -3294,7 +3340,7 @@ fun NostrSignerScreen(
                                 }
                             }
                         }
-                        "nip04_encrypt" -> {
+                        "nip04_encrypt", "nip44_encrypt" -> {
                             Text(
                                 text = "Recipient Pubkey: ${request.destPubkey}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -3306,7 +3352,7 @@ fun NostrSignerScreen(
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         }
-                        "nip04_decrypt" -> {
+                        "nip04_decrypt", "nip44_decrypt" -> {
                             Text(
                                 text = "Sender Pubkey: ${request.destPubkey}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -3418,6 +3464,17 @@ fun NostrSignerScreen(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text("Reject")
+                            }
+                        }
+                        if (uiState.showSwitchAccount) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedButton(
+                                onClick = onSwitchAccount,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Switch Account (Re-scan Tag)")
                             }
                         }
                     }

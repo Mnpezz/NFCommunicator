@@ -92,7 +92,9 @@ data class NostrSignerRequest(
     val plaintext: String?,
     val ciphertext: String?,
     val destPubkey: String?,
-    val callingPackage: String?
+    val callingPackage: String?,
+    val currentUser: String? = null,
+    val iv: String? = null
 )
 
 sealed interface NostrSignerResultEvent {
@@ -236,7 +238,9 @@ data class MainUiState(
     val autoSignKind31234: Boolean = false,
     val autoSignKind5: Boolean = false,
     val autoSignNipEncrypt: Boolean = false,
-    val autoSignNipDecrypt: Boolean = false
+    val autoSignNipDecrypt: Boolean = false,
+    val showSwitchAccount: Boolean = false,
+    val nostrSignerError: String? = null
 ) {
     val canScanNfc: Boolean
         get() = nfcAvailable && nfcEnabled
@@ -1018,7 +1022,16 @@ class NfcViewModel(
                 nostrNsec = null,
                 nostrNpub = null,
                 nostrPubkeyHex = null,
-                showConfirmBottomSheet = false
+                showConfirmBottomSheet = false,
+                cashuProofs = emptyList(),
+                cashuBalanceSat = 0L,
+                cashuMintQuote = null,
+                cashuMintQuoteAmountSat = 0L,
+                cashuError = null,
+                cashuMeltQuote = null,
+                cashuMeltInvoice = "",
+                cashuMeltSuccessPreimage = null,
+                cashuGeneratedToken = null
             )
         }
     }
@@ -2659,7 +2672,7 @@ class NfcViewModel(
         runCatching { StorageBackend.valueOf(this) }.getOrNull()
 
     fun setNostrSignerRequest(request: NostrSignerRequest) {
-        _uiState.update { it.copy(nostrSignerRequest = request) }
+        _uiState.update { it.copy(nostrSignerRequest = request, showSwitchAccount = false, nostrSignerError = null) }
         
         val kind = getRequestEventKind(request)
         val isAutoApproved = when (request.type) {
@@ -2682,14 +2695,18 @@ class NfcViewModel(
             if (mnemonic != null) {
                 val keys = NostrEngine.deriveNostrKeys(mnemonic)
                 if (keys != null) {
-                    approveNostrSignerRequest(keys.privkeyHex)
+                    val activePubkey = keys.pubkeyHex.trim().lowercase()
+                    val expectedPubkey = request.currentUser?.trim()?.lowercase()
+                    if (expectedPubkey.isNullOrEmpty() || activePubkey == expectedPubkey) {
+                        approveNostrSignerRequest(keys.privkeyHex)
+                    }
                 }
             }
         }
     }
 
     fun clearNostrSignerRequest() {
-        _uiState.update { it.copy(nostrSignerRequest = null) }
+        _uiState.update { it.copy(nostrSignerRequest = null, showSwitchAccount = false, nostrSignerError = null) }
     }
 
     fun rejectNostrSignerRequest() {
@@ -2698,6 +2715,11 @@ class NfcViewModel(
             _nostrSignerResults.send(NostrSignerResultEvent.Rejected(request.id))
             clearNostrSignerRequest()
         }
+    }
+
+    fun dismissNostrSignerErrorAndReject() {
+        _uiState.update { it.copy(nostrSignerError = null) }
+        rejectNostrSignerRequest()
     }
 
     fun approveNostrSignerRequestWithCurrentWallet() {
@@ -2710,6 +2732,13 @@ class NfcViewModel(
         val request = _uiState.value.nostrSignerRequest ?: return
         viewModelScope.launch {
             try {
+                val activeKeys = NostrEngine.deriveNostrKeys(privateKeyHex) ?: throw IllegalArgumentException("Invalid key derivation")
+                val activePubkey = activeKeys.pubkeyHex.trim().lowercase()
+                val expectedPubkey = request.currentUser?.trim()?.lowercase()
+                if (!expectedPubkey.isNullOrEmpty() && activePubkey != expectedPubkey) {
+                    throw SecurityException("Active signer public key ($activePubkey) does not match expected public key ($expectedPubkey)")
+                }
+
                 val resultString: String
                 var signedEventJson: String? = null
 
@@ -2732,7 +2761,7 @@ class NfcViewModel(
                     "nip04_decrypt" -> {
                         val ciphertext = request.ciphertext ?: throw IllegalArgumentException("Missing ciphertext")
                         val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
-                        resultString = NostrEngine.nip04Decrypt(ciphertext, destPubkey, privateKeyHex)
+                        resultString = NostrEngine.nip04Decrypt(ciphertext, destPubkey, privateKeyHex, request.iv)
                     }
                     "nip44_encrypt" -> {
                         val plaintext = request.plaintext ?: throw IllegalArgumentException("Missing plaintext")
@@ -2743,6 +2772,48 @@ class NfcViewModel(
                         val ciphertext = request.ciphertext ?: throw IllegalArgumentException("Missing ciphertext")
                         val destPubkey = request.destPubkey ?: throw IllegalArgumentException("Missing destination public key")
                         resultString = NostrEngine.nip44Decrypt(ciphertext, destPubkey, privateKeyHex)
+                    }
+                    "decrypt_zap_event" -> {
+                        // NIP-57: parse the zap receipt, find the "description" tag which
+                        // contains the original zap request JSON, then NIP-04 decrypt its
+                        // content if non-empty (anonymous zap). Return the decrypted content
+                        // or the description tag value as-is for non-anonymous zaps.
+                        val eventStr = request.eventJson
+                            ?: request.ciphertext
+                            ?: throw IllegalArgumentException("Missing zap event JSON")
+                        val eventObj = org.json.JSONObject(eventStr)
+                        val tags = eventObj.optJSONArray("tags")
+                        var description: String? = null
+                        if (tags != null) {
+                            for (i in 0 until tags.length()) {
+                                val tag = tags.optJSONArray(i)
+                                if (tag != null && tag.optString(0) == "description") {
+                                    description = tag.optString(1)
+                                    break
+                                }
+                            }
+                        }
+                        if (description != null) {
+                            val zapRequest = runCatching { org.json.JSONObject(description) }.getOrNull()
+                            val zapContent = zapRequest?.optString("content", "") ?: ""
+                            val zapperPubkey = zapRequest?.optString("pubkey", "") ?: ""
+                            resultString = if (zapContent.isNotEmpty() && zapperPubkey.isNotEmpty()) {
+                                // Anonymous zap — decrypt the NIP-04 content
+                                NostrEngine.nip04Decrypt(zapContent, zapperPubkey, privateKeyHex)
+                            } else {
+                                // Non-anonymous zap — return the zap request JSON as-is
+                                description
+                            }
+                        } else {
+                            // No description tag — fall back to decrypting event content directly
+                            val content = eventObj.optString("content", "")
+                            val pubkey = eventObj.optString("pubkey", "")
+                            resultString = if (content.isNotEmpty() && pubkey.isNotEmpty()) {
+                                NostrEngine.nip04Decrypt(content, pubkey, privateKeyHex)
+                            } else {
+                                eventStr
+                            }
+                        }
                     }
                     else -> throw IllegalArgumentException("Unknown request type: ${request.type}")
                 }
@@ -2759,6 +2830,11 @@ class NfcViewModel(
                 clearNostrSignerRequest()
             } catch (e: Exception) {
                 _feedbackEvents.emit(UserFeedbackEvent("Nostr operation failed: ${e.message}", FeedbackTone.Error))
+                if (e is SecurityException) {
+                    _uiState.update { it.copy(showSwitchAccount = true) }
+                } else {
+                    _uiState.update { it.copy(nostrSignerError = e.message ?: "Unknown error occurred") }
+                }
             }
         }
     }

@@ -18,6 +18,11 @@ A secure, offline NFC messaging and cryptographic key storage tool. Encrypt, wri
 - **Nostr & eCash (Cashu)**:
   - Identity keypair derivation (NIP-06) for Nostr (`nsec` and `npub`).
   - Cashu (eCash) minting, melting (Lightning invoice payments), sending, and receiving (NIP-60/NIP-61) with searchable active mint discovery.
+  - **NIP-55 Nostr Signer Integration**: External Nostr clients (such as Amethyst, Wisp, etc.) can securely request public keys, event signing, and payload encryption/decryption (both NIP-04 and NIP-44).
+  - **Auto-Approval Rules**: Configurable settings allow automatic approval for specific Nostr event kinds (kind 5, 22242, 10050, 31234) and NIP-04/NIP-44 actions.
+  - **Caller Verification Allowlist (Security)**: The `SignerProvider` intercepts and validates the calling package name. Background requests from unapproved apps return `null` (forcing standard clients to fallback to standard Intent-based prompts), and authorized caller packages are stored in a persistent allowlist upon user confirmation.
+  - **Protocol Robustness & Loop Protection**: Decrypts hex, standard Base64, and URL-safe Base64 IVs/payloads. Uncaught background exceptions are caught and returned as clean error cursors (preventing client NullPointerExceptions), while foreground exceptions display a manual dismiss dialog (preventing Android's rapid-launch loop).
+  - **Switch Account UX**: Provides a context-aware "Switch Account (Re-scan Tag)" button during signer requests to allow users to switch active cards/identities without leaving the signing flow.
 
 ## Product decisions in this scaffold
 

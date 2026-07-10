@@ -217,10 +217,66 @@ object NostrEngine {
         return "$encBase64?iv=$ivBase64"
     }
 
+    fun normalizeNostrPubKey(pubkey: String?): String? {
+        val clean = pubkey?.trim() ?: return null
+        if (clean.isEmpty()) return null
+        if (clean.startsWith("npub1", ignoreCase = true)) {
+            return try {
+                val (hrp, bytes, _) = fr.acinq.bitcoin.Bech32.decodeBytes(clean)
+                if (hrp == "npub") {
+                    fr.acinq.bitcoin.ByteVector(bytes).toHex().lowercase()
+                } else {
+                    clean.lowercase()
+                }
+            } catch (e: Exception) {
+                clean.lowercase()
+            }
+        }
+        return clean.lowercase()
+    }
+
+    fun decodeIvString(ivStr: String): ByteArray {
+        val trimmed = ivStr.trim()
+        if (trimmed.isEmpty()) {
+            return ByteArray(0)
+        }
+        // Try hex decoding first if it matches a 32-char hex pattern or only contains hex characters
+        if (trimmed.length == 32 || trimmed.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            val hexBytes = runCatching { fr.acinq.bitcoin.ByteVector(trimmed).toByteArray() }.getOrNull()
+            if (hexBytes != null && hexBytes.size == 16) {
+                return hexBytes
+            }
+        }
+        // Try standard base64 decoding
+        val b64Bytes = runCatching { java.util.Base64.getDecoder().decode(trimmed) }.getOrNull()
+        if (b64Bytes != null && b64Bytes.size == 16) {
+            return b64Bytes
+        }
+        // Try URL-safe base64 decoding
+        val urlSafeFixed = trimmed.replace('-', '+').replace('_', '/')
+        val padded = urlSafeFixed + "=".repeat((4 - urlSafeFixed.length % 4) % 4)
+        val urlSafeBytes = runCatching { java.util.Base64.getDecoder().decode(padded) }.getOrNull()
+        if (urlSafeBytes != null && urlSafeBytes.size == 16) {
+            return urlSafeBytes
+        }
+        // Fallback: return whichever decoded successfully
+        return b64Bytes ?: urlSafeBytes ?: ByteArray(0)
+    }
+
+    fun decodeBase64String(b64Str: String): ByteArray {
+        val trimmed = b64Str.trim()
+        val standard = runCatching { java.util.Base64.getDecoder().decode(trimmed) }.getOrNull()
+        if (standard != null) return standard
+        val urlSafeFixed = trimmed.replace('-', '+').replace('_', '/')
+        val padded = urlSafeFixed + "=".repeat((4 - urlSafeFixed.length % 4) % 4)
+        return runCatching { java.util.Base64.getDecoder().decode(padded) }.getOrNull()
+            ?: throw IllegalArgumentException("Failed to base64-decode data")
+    }
+
     /**
      * Performs NIP-04 AES-256-CBC decryption using the ECDH shared secret.
      */
-    fun nip04Decrypt(ciphertextWithIv: String, destPubkeyHex: String, privateKeyHex: String): String {
+    fun nip04Decrypt(ciphertextWithIv: String, destPubkeyHex: String, privateKeyHex: String, explicitIvBase64: String? = null): String {
         val privKey = KeyParser.parsePrivateKey(privateKeyHex) ?: throw IllegalArgumentException("Invalid private key")
         val targetPubBytes = byteArrayOf(0x02.toByte()) + ByteVector(destPubkeyHex).toByteArray()
         val parsedPub = PublicKey(ByteVector(targetPubBytes))
@@ -228,12 +284,21 @@ object NostrEngine {
         val sharedSecret = parsedPub.times(privKey).value.toByteArray().sliceArray(1..32)
 
         val parts = ciphertextWithIv.split("?iv=")
-        if (parts.size != 2) {
-            throw IllegalArgumentException("Invalid NIP-04 ciphertext format")
+        val encryptedBytes: ByteArray
+        val ivBytes: ByteArray
+
+        if (parts.size == 2) {
+            encryptedBytes = decodeBase64String(parts[0])
+            ivBytes = decodeIvString(parts[1])
+        } else {
+            val ivStr = explicitIvBase64 ?: throw IllegalArgumentException("Invalid NIP-04 ciphertext format: missing IV")
+            encryptedBytes = decodeBase64String(ciphertextWithIv)
+            ivBytes = decodeIvString(ivStr)
         }
 
-        val encryptedBytes = java.util.Base64.getDecoder().decode(parts[0])
-        val ivBytes = java.util.Base64.getDecoder().decode(parts[1])
+        if (ivBytes.size != 16) {
+            throw IllegalArgumentException("IV must be exactly 16 bytes")
+        }
 
         val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
         val ivSpec = javax.crypto.spec.IvParameterSpec(ivBytes)
@@ -244,6 +309,7 @@ object NostrEngine {
 
         return String(decrypted, Charsets.UTF_8)
     }
+
 
     private fun hkdfExtract(salt: ByteArray, ikm: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
@@ -330,9 +396,7 @@ object NostrEngine {
         // Encrypt with ChaCha20 (counter starts at 0)
         val cipher = Cipher.getInstance("ChaCha20")
         val keySpec = SecretKeySpec(chachaKey, "ChaCha20")
-        // IvParameterSpec is used instead of ChaCha20ParameterSpec because
-        // ChaCha20ParameterSpec requires API 33+; IvParameterSpec works on API 26+.
-        cipher.init(Cipher.ENCRYPT_MODE, keySpec, javax.crypto.spec.IvParameterSpec(chachaNonce))
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, getChaCha20ParameterSpec(chachaNonce))
         val ciphertext = cipher.doFinal(paddedPlaintext)
 
         // Calculate HMAC-SHA256 over nonce + ciphertext
@@ -361,14 +425,35 @@ object NostrEngine {
         val salt = "nip44-v2".toByteArray(Charsets.UTF_8)
         val conversationKey = hkdfExtract(salt, sharedSecret)
 
-        // Decode Payload
-        val payloadBytes = Base64.getDecoder().decode(payloadBase64.trim())
-        if (payloadBytes.isEmpty() || payloadBytes[0].toInt() != 0x02) {
-            throw IllegalArgumentException("Unsupported NIP-44 version: ${payloadBytes.getOrNull(0)?.toInt()}")
+        // Decode Payload — try standard base64 first, then URL-safe base64.
+        // Some Nostr clients (e.g. Wisp) encode with base64url (RFC 4648 §5)
+        // instead of standard base64, which causes a corrupted version byte
+        // when decoded with the standard decoder.
+        val payloadBytes: ByteArray = run {
+            val trimmed = payloadBase64.trim()
+            // Try standard base64 first (the NIP-44 v2 spec uses this)
+            val standard = runCatching { Base64.getDecoder().decode(trimmed) }.getOrNull()
+            if (standard != null && standard.isNotEmpty() && (standard[0].toInt() and 0xFF) == 2) {
+                return@run standard
+            }
+            // Fall back to URL-safe base64 (replaces - → + and _ → / then decodes)
+            val urlSafeFixed = trimmed.replace('-', '+').replace('_', '/')
+            val padded = urlSafeFixed + "=".repeat((4 - urlSafeFixed.length % 4) % 4)
+            val urlSafe = runCatching { Base64.getDecoder().decode(padded) }.getOrNull()
+            if (urlSafe != null && urlSafe.isNotEmpty() && (urlSafe[0].toInt() and 0xFF) == 2) {
+                return@run urlSafe
+            }
+            // Last resort: return whichever decoded successfully, even if version is wrong
+            standard ?: urlSafe ?: throw IllegalArgumentException("Failed to base64-decode NIP-44 payload")
+        }
+
+        val version = payloadBytes.getOrNull(0)?.toInt()?.and(0xFF)
+        if (version != 2) {
+            throw IllegalArgumentException("Unsupported NIP-44 version: $version (expected 2)")
         }
 
         if (payloadBytes.size < 1 + 32 + 32) {
-            throw IllegalArgumentException("Invalid NIP-44 payload size")
+            throw IllegalArgumentException("Invalid NIP-44 payload size: ${payloadBytes.size} bytes")
         }
 
         val nonce = payloadBytes.sliceArray(1..32)
@@ -391,9 +476,7 @@ object NostrEngine {
         // Decrypt with ChaCha20
         val cipher = Cipher.getInstance("ChaCha20")
         val keySpec = SecretKeySpec(chachaKey, "ChaCha20")
-        // IvParameterSpec is used instead of ChaCha20ParameterSpec because
-        // ChaCha20ParameterSpec requires API 33+; IvParameterSpec works on API 26+.
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, javax.crypto.spec.IvParameterSpec(chachaNonce))
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, getChaCha20ParameterSpec(chachaNonce))
         val paddedPlaintext = cipher.doFinal(ciphertext)
 
         // Unpad Plaintext
@@ -405,6 +488,17 @@ object NostrEngine {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))
         return mac.doFinal(data)
+    }
+
+    private fun getChaCha20ParameterSpec(nonce: ByteArray): java.security.spec.AlgorithmParameterSpec {
+        return try {
+            val clazz = Class.forName("javax.crypto.spec.ChaCha20ParameterSpec")
+            val constructor = clazz.getConstructor(ByteArray::class.java, Int::class.javaPrimitiveType)
+            constructor.newInstance(nonce, 0) as java.security.spec.AlgorithmParameterSpec
+        } catch (e: Exception) {
+            // Fallback for older Android APIs (< 33) where ChaCha20ParameterSpec doesn't exist
+            javax.crypto.spec.IvParameterSpec(nonce)
+        }
     }
 }
 
