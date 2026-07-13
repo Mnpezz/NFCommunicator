@@ -176,6 +176,7 @@ fun NfcCommunicatorApp(
     onBreezClearSend: () -> Unit = {},
     onBreezClearReceive: () -> Unit = {},
     onCashuMintUrlChanged: (String) -> Unit = {},
+    onSyncEcashWallet: () -> Unit = {},
     onCashuMintAmountInputChanged: (String) -> Unit = {},
     onCashuSendAmountInputChanged: (String) -> Unit = {},
     onCashuReceiveTokenInputChanged: (String) -> Unit = {},
@@ -302,6 +303,7 @@ fun NfcCommunicatorApp(
                     onBreezClearSend = onBreezClearSend,
                     onBreezClearReceive = onBreezClearReceive,
                     onCashuMintUrlChanged = onCashuMintUrlChanged,
+                    onSyncEcashWallet = onSyncEcashWallet,
                     onCashuMintAmountInputChanged = onCashuMintAmountInputChanged,
                     onCashuSendAmountInputChanged = onCashuSendAmountInputChanged,
                     onCashuReceiveTokenInputChanged = onCashuReceiveTokenInputChanged,
@@ -396,6 +398,7 @@ private fun ReadScreen(
     onBreezClearSend: () -> Unit = {},
     onBreezClearReceive: () -> Unit = {},
     onCashuMintUrlChanged: (String) -> Unit = {},
+    onSyncEcashWallet: () -> Unit = {},
     onCashuMintAmountInputChanged: (String) -> Unit = {},
     onCashuSendAmountInputChanged: (String) -> Unit = {},
     onCashuReceiveTokenInputChanged: (String) -> Unit = {},
@@ -524,6 +527,7 @@ private fun ReadScreen(
                 onBreezClearSend = onBreezClearSend,
                 onBreezClearReceive = onBreezClearReceive,
                 onCashuMintUrlChanged = onCashuMintUrlChanged,
+                onSyncEcashWallet = onSyncEcashWallet,
                 onCashuMintAmountInputChanged = onCashuMintAmountInputChanged,
                 onCashuSendAmountInputChanged = onCashuSendAmountInputChanged,
                 onCashuReceiveTokenInputChanged = onCashuReceiveTokenInputChanged,
@@ -1687,6 +1691,7 @@ private fun WalletPanel(
     onBreezClearSend: () -> Unit,
     onBreezClearReceive: () -> Unit,
     onCashuMintUrlChanged: (String) -> Unit,
+    onSyncEcashWallet: () -> Unit,
     onCashuMintAmountInputChanged: (String) -> Unit,
     onCashuSendAmountInputChanged: (String) -> Unit,
     onCashuReceiveTokenInputChanged: (String) -> Unit,
@@ -2138,6 +2143,7 @@ private fun WalletPanel(
                 EcashWalletSection(
                     uiState = uiState,
                     onCashuMintUrlChanged = onCashuMintUrlChanged,
+                    onSyncEcashWallet = onSyncEcashWallet,
                     onCashuMintAmountInputChanged = onCashuMintAmountInputChanged,
                     onCashuSendAmountInputChanged = onCashuSendAmountInputChanged,
                     onCashuReceiveTokenInputChanged = onCashuReceiveTokenInputChanged,
@@ -2577,6 +2583,7 @@ private fun NostrWalletSection(
 private fun EcashWalletSection(
     uiState: MainUiState,
     onCashuMintUrlChanged: (String) -> Unit,
+    onSyncEcashWallet: () -> Unit,
     onCashuMintAmountInputChanged: (String) -> Unit,
     onCashuSendAmountInputChanged: (String) -> Unit,
     onCashuReceiveTokenInputChanged: (String) -> Unit,
@@ -2608,22 +2615,38 @@ private fun EcashWalletSection(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Cashu Wallet",
-                    tint = MaterialTheme.colorScheme.secondary
-                )
-                Text(
-                    text = "Cashu eCash Wallet (NIP-60)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "Cashu Wallet",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = "Cashu eCash Wallet (NIP-60)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+                
+                IconButton(
+                    onClick = onSyncEcashWallet,
+                    enabled = !uiState.cashuLoading
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Sync Wallet",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
             }
 
             // Balance Display

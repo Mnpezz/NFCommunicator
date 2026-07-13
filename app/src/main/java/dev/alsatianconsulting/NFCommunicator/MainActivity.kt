@@ -175,6 +175,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     onBreezClearSend = viewModel::onBreezClearSend,
                     onBreezClearReceive = viewModel::onBreezClearReceive,
                     onCashuMintUrlChanged = viewModel::onCashuMintUrlChanged,
+                    onSyncEcashWallet = viewModel::syncEcashWallet,
                     onCashuMintAmountInputChanged = viewModel::onCashuMintAmountInputChanged,
                     onCashuSendAmountInputChanged = viewModel::onCashuSendAmountInputChanged,
                     onCashuReceiveTokenInputChanged = viewModel::onCashuReceiveTokenInputChanged,

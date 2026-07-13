@@ -164,4 +164,53 @@ object CashuEngine {
         val neg_rK = Secp256k1Math.negate(rK)
         return Secp256k1Math.add(C_prime, neg_rK)
     }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    fun deriveSecretAndR(
+        seed: ByteArray,
+        keysetId: String,
+        counter: Long
+    ): Pair<String, BigInteger> {
+        val domain = "Cashu_KDF_HMAC_SHA256".toByteArray(Charsets.UTF_8)
+        val keysetBytes = try {
+            val cleanHex = keysetId.trim()
+            val result = ByteArray(cleanHex.length / 2)
+            for (i in 0 until cleanHex.length step 2) {
+                result[i / 2] = cleanHex.substring(i, i + 2).toInt(16).toByte()
+            }
+            result
+        } catch (e: Exception) {
+            ByteArray(0)
+        }
+
+        val counterBytes = java.nio.ByteBuffer.allocate(8).putLong(counter).array()
+
+        // message = domain || keysetBytes || counterBytes
+        val message = domain + keysetBytes + counterBytes
+
+        val secretDerivation = message + byteArrayOf(0)
+        val rDerivation = message + byteArrayOf(1)
+
+        val secretDigest = hmacSha256(seed, secretDerivation)
+        val rDigest = hmacSha256(seed, rDerivation)
+
+        val rVal = BigInteger(1, rDigest).mod(Secp256k1Math.N)
+        if (rVal == BigInteger.ZERO) {
+            throw Exception("Derived invalid blinding scalar r == 0")
+        }
+
+        return Pair(secretDigest.toHex(), rVal)
+    }
+
+    fun deriveYPointHex(secret: String): String {
+        val yPoint = hashToCurve(secret.toByteArray(Charsets.UTF_8))
+        return yPoint.toHex()
+    }
+
+    private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+        return mac.doFinal(data)
+    }
 }

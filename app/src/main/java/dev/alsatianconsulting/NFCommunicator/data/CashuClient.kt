@@ -39,6 +39,11 @@ data class MeltResponse(
     val change: List<BlindedSignature> = emptyList()
 )
 
+data class TokenState(
+    val Y: String,
+    val state: String
+)
+
 object CashuClient {
 
     private fun cleanUrl(url: String): String {
@@ -378,6 +383,120 @@ object CashuClient {
             } else {
                 val err = readErrorStream(connection)
                 throw Exception("Failed to swap eCash tokens: HTTP $responseCode - $err")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+data class RestoredSignature(
+    val b_: String,
+    val amount: Long,
+    val id: String,
+    val C_: String
+)
+
+    suspend fun restoreSignatures(
+        mintUrl: String,
+        outputs: List<BlindedMessage>
+    ): List<RestoredSignature> = withContext(Dispatchers.IO) {
+        val baseUrl = cleanUrl(mintUrl)
+        val url = URL("$baseUrl/v1/restore")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        connection.setRequestProperty("Content-Type", "application/json")
+
+        val outputsArray = JSONArray()
+        outputs.forEach { out ->
+            outputsArray.put(JSONObject().apply {
+                put("amount", out.amount)
+                put("id", out.id)
+                put("B_", out.B_)
+            })
+        }
+
+        val payload = JSONObject().apply {
+            put("outputs", outputsArray)
+        }
+
+        try {
+            OutputStreamWriter(connection.outputStream).use { it.write(payload.toString()) }
+            val responseCode = connection.responseCode
+            if (responseCode == 200) {
+                val response = readStream(connection)
+                val json = JSONObject(response)
+                val responseOutputsArray = json.getJSONArray("outputs")
+                val sigsArray = json.getJSONArray("signatures")
+                val signatures = mutableListOf<RestoredSignature>()
+                
+                val len = minOf(responseOutputsArray.length(), sigsArray.length())
+                for (i in 0 until len) {
+                    val outObj = responseOutputsArray.getJSONObject(i)
+                    val sigObj = sigsArray.getJSONObject(i)
+                    signatures.add(
+                        RestoredSignature(
+                            b_ = outObj.getString("B_"),
+                            amount = sigObj.getLong("amount"),
+                            id = sigObj.getString("id"),
+                            C_ = sigObj.getString("C_")
+                        )
+                    )
+                }
+                signatures
+            } else {
+                val err = readErrorStream(connection)
+                throw Exception("Failed to restore signatures: HTTP $responseCode - $err")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    suspend fun checkTokenStates(
+        mintUrl: String,
+        ys: List<String>
+    ): List<TokenState> = withContext(Dispatchers.IO) {
+        val baseUrl = cleanUrl(mintUrl)
+        val url = URL("$baseUrl/v1/checkstate")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.connectTimeout = 15000
+        connection.readTimeout = 15000
+        connection.setRequestProperty("Content-Type", "application/json")
+
+        val ysArray = JSONArray()
+        ys.forEach { ysArray.put(it) }
+
+        val payload = JSONObject().apply {
+            put("Ys", ysArray)
+        }
+
+        try {
+            OutputStreamWriter(connection.outputStream).use { it.write(payload.toString()) }
+            val responseCode = connection.responseCode
+            if (responseCode == 200) {
+                val response = readStream(connection)
+                val json = JSONObject(response)
+                val statesArray = json.getJSONArray("states")
+                val states = mutableListOf<TokenState>()
+                
+                for (i in 0 until statesArray.length()) {
+                    val obj = statesArray.getJSONObject(i)
+                    states.add(
+                        TokenState(
+                            Y = obj.getString("Y"),
+                            state = obj.getString("state")
+                        )
+                    )
+                }
+                states
+            } else {
+                val err = readErrorStream(connection)
+                throw Exception("Failed to check token states: HTTP $responseCode - $err")
             }
         } finally {
             connection.disconnect()

@@ -66,4 +66,26 @@ class CashuEngineTest {
         assertEquals(originalPoint.x, parsedPoint.x)
         assertEquals(originalPoint.y, parsedPoint.y)
     }
+
+    @Test
+    fun testDeterministicDerivation() {
+        val seed = "dummy_seed_phrase_with_at_least_twelve_words_long".toByteArray(Charsets.UTF_8)
+        val keysetId = "009a0f5a"
+        val counter = 0L
+        
+        // Derivation 1
+        val (secret1, r1) = CashuEngine.deriveSecretAndR(seed, keysetId, counter)
+        assertNotNull(secret1)
+        assertNotNull(r1)
+        
+        // Derivation 2 (reproducibility test)
+        val (secret2, r2) = CashuEngine.deriveSecretAndR(seed, keysetId, counter)
+        assertEquals(secret1, secret2)
+        assertEquals(r1, r2)
+        
+        // Derivation with different counter
+        val (secret3, r3) = CashuEngine.deriveSecretAndR(seed, keysetId, counter + 1)
+        assertNotEquals(secret1, secret3)
+        assertNotEquals(r1, r3)
+    }
 }

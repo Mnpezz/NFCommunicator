@@ -220,6 +220,7 @@ data class MainUiState(
     val cashuBalanceSat: Long = 0L,
     val cashuMintUrl: String = "https://mint.minibits.cash/Bitcoin",
     val cashuProofs: List<CashuProof> = emptyList(),
+    val cashuCounter: Long = 0L,
     val cashuMintQuote: MintQuoteResponse? = null,
     val cashuMintQuoteAmountSat: Long = 0L,
     val cashuError: String? = null,
@@ -416,6 +417,7 @@ class NfcViewModel(
                     fetchBitcoinBalanceAndUtxos(addr)
                 }
             }
+            syncEcashWallet()
         }
     }
 
@@ -1685,6 +1687,10 @@ class NfcViewModel(
                     }
                 }
             }
+            val stateAfter = _uiState.value
+            if (stateAfter.readMessage != null && (action is PendingScanAction.Read || action is PendingScanAction.ReadShare)) {
+                syncEcashWallet()
+            }
         }
     }
 
@@ -1800,6 +1806,7 @@ class NfcViewModel(
                 if (request != null && nostrKeys != null) {
                     approveNostrSignerRequest(nostrKeys.privkeyHex)
                 }
+                syncEcashWallet()
             }
         }
     }
@@ -2057,6 +2064,116 @@ class NfcViewModel(
     fun onCashuMintUrlChanged(url: String) {
         _uiState.update { it.copy(cashuMintUrl = url, cashuError = null) }
         persistRestorableState(_uiState.value)
+        syncEcashWallet()
+    }
+
+    fun syncEcashWallet() {
+        val seed = deriveCashuMasterSeed() ?: return
+        val mintUrl = _uiState.value.cashuMintUrl
+        _uiState.update { it.copy(cashuLoading = true, cashuError = null) }
+        viewModelScope.launch {
+            try {
+                val keysets = CashuClient.fetchKeysets(mintUrl)
+                val satKeyset = keysets.firstOrNull { it.unit == "sat" }
+                    ?: throw Exception("No sat keyset found at mint")
+                
+                val candidateProofs = mutableListOf<CashuProof>()
+                val secretMap = mutableMapOf<String, String>()
+                val rMap = mutableMapOf<String, BigInteger>()
+                
+                var currentCounter = 0L
+                var maxUsedCounter = -1L
+                var consecutiveEmptyBatches = 0
+                val batchSize = 100
+                
+                while (consecutiveEmptyBatches < 3) {
+                    val blindedMessages = mutableListOf<BlindedMessage>()
+                    
+                    for (i in 0 until batchSize) {
+                        val idx = currentCounter + i
+                        val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, idx)
+                        val B_point = CashuEngine.blind(secret, r)
+                        val B_hex = B_point.toHex()
+                        
+                        secretMap[B_hex] = secret
+                        rMap[B_hex] = r
+                        blindedMessages.add(BlindedMessage(amount = 1L, id = satKeyset.id, B_ = B_hex))
+                    }
+                    
+                    val restored = CashuClient.restoreSignatures(mintUrl, blindedMessages)
+                    if (restored.isEmpty()) {
+                        consecutiveEmptyBatches++
+                    } else {
+                        consecutiveEmptyBatches = 0
+                        
+                        for (sig in restored) {
+                            val r = rMap[sig.b_]
+                            val secret = secretMap[sig.b_]
+                            if (r != null && secret != null) {
+                                val K_hex = satKeyset.keys[sig.amount]
+                                if (K_hex != null) {
+                                    val K_point = Secp256k1Math.parsePoint(K_hex)
+                                    val C_prime = Secp256k1Math.parsePoint(sig.C_)
+                                    val C_point = CashuEngine.unblind(C_prime, r, K_point)
+                                    
+                                    candidateProofs.add(
+                                        CashuProof(
+                                            amount = sig.amount,
+                                            id = sig.id,
+                                            secret = secret,
+                                            C = C_point.toHex()
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        
+                        for (i in 0 until batchSize) {
+                            val idx = currentCounter + i
+                            val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, idx)
+                            val B_point = CashuEngine.blind(secret, r)
+                            val B_hex = B_point.toHex()
+                            if (restored.any { it.b_ == B_hex }) {
+                                if (idx > maxUsedCounter) {
+                                    maxUsedCounter = idx
+                                }
+                            }
+                        }
+                    }
+                    
+                    currentCounter += batchSize
+                }
+                
+                val unspentProofs = if (candidateProofs.isNotEmpty()) {
+                    val ys = candidateProofs.map { proof ->
+                        CashuEngine.deriveYPointHex(proof.secret)
+                    }
+                    val states = CashuClient.checkTokenStates(mintUrl, ys)
+                    val stateMap = states.associate { it.Y to it.state }
+                    
+                    candidateProofs.filter { proof ->
+                        val y = CashuEngine.deriveYPointHex(proof.secret)
+                        stateMap[y] == "UNSPENT"
+                    }
+                } else {
+                    emptyList()
+                }
+                
+                val finalCounter = maxOf(maxUsedCounter + 1, _uiState.value.cashuCounter)
+                
+                _uiState.update { state ->
+                    state.copy(
+                        cashuProofs = unspentProofs,
+                        cashuBalanceSat = unspentProofs.sumOf { it.amount },
+                        cashuCounter = finalCounter,
+                        cashuLoading = false
+                    )
+                }
+                persistRestorableState(_uiState.value)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(cashuError = "Sync Error: ${e.message}", cashuLoading = false) }
+            }
+        }
     }
 
     fun onCashuMintAmountInputChanged(input: String) {
@@ -2107,27 +2224,24 @@ class NfcViewModel(
                 val satKeyset = keysets.firstOrNull { it.unit == "sat" } 
                     ?: throw Exception("No sat keyset found at mint")
                     
+                val seed = deriveCashuMasterSeed() 
+                    ?: throw Exception("Wallet is locked or no seed phrase found")
                 val parts = splitAmount(amount)
                 val secrets = mutableListOf<String>()
                 val rs = mutableListOf<BigInteger>()
                 val blindedMessages = mutableListOf<BlindedMessage>()
-                val secureRandom = java.security.SecureRandom()
+                
+                var currentCounter = _uiState.value.cashuCounter
                 
                 parts.forEach { partAmount ->
-                    val secBytes = ByteArray(32).apply { secureRandom.nextBytes(this) }
-                    val secret = secBytes.joinToString("") { "%02x".format(it) }
-                    
-                    var r: BigInteger
-                    do {
-                        r = BigInteger(256, secureRandom)
-                    } while (r >= Secp256k1Math.N || r == BigInteger.ZERO)
-                    
+                    val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, currentCounter)
                     val B_point = CashuEngine.blind(secret, r)
                     val B_hex = B_point.toHex()
                     
                     secrets.add(secret)
                     rs.add(r)
                     blindedMessages.add(BlindedMessage(amount = partAmount, id = satKeyset.id, B_ = B_hex))
+                    currentCounter++
                 }
                 
                 val signatures = CashuClient.mintTokens(mintUrl, quote.quote, blindedMessages)
@@ -2151,6 +2265,7 @@ class NfcViewModel(
                 _uiState.update { it.copy(
                     cashuProofs = updatedProofs,
                     cashuBalanceSat = updatedProofs.sumOf { p -> p.amount },
+                    cashuCounter = currentCounter,
                     cashuMintQuote = null,
                     cashuMintQuoteAmountSat = 0L,
                     cashuMintAmountInput = "",
@@ -2198,6 +2313,8 @@ class NfcViewModel(
                 val satKeyset = keysets.firstOrNull { it.unit == "sat" } 
                     ?: throw Exception("No sat keyset found at mint")
                     
+                val seed = deriveCashuMasterSeed() 
+                    ?: throw Exception("Wallet is locked or no seed phrase found")
                 val sendParts = splitAmount(amount)
                 val changeParts = splitAmount(changeAmount)
                 val allParts = sendParts + changeParts
@@ -2205,23 +2322,18 @@ class NfcViewModel(
                 val secrets = mutableListOf<String>()
                 val rs = mutableListOf<BigInteger>()
                 val blindedMessages = mutableListOf<BlindedMessage>()
-                val secureRandom = java.security.SecureRandom()
+                
+                var currentCounter = _uiState.value.cashuCounter
                 
                 allParts.forEach { partAmount ->
-                    val secBytes = ByteArray(32).apply { secureRandom.nextBytes(this) }
-                    val secret = secBytes.joinToString("") { "%02x".format(it) }
-                    
-                    var r: BigInteger
-                    do {
-                        r = BigInteger(256, secureRandom)
-                    } while (r.compareTo(Secp256k1Math.N) >= 0 || r.signum() == 0)
-                    
+                    val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, currentCounter)
                     val B_point = CashuEngine.blind(secret, r)
                     val B_hex = B_point.toHex()
                     
                     secrets.add(secret)
                     rs.add(r)
                     blindedMessages.add(BlindedMessage(amount = partAmount, id = satKeyset.id, B_ = B_hex))
+                    currentCounter++
                 }
                 
                 val signatures = CashuClient.swapTokens(mintUrl, selectedInputs, blindedMessages)
@@ -2252,6 +2364,7 @@ class NfcViewModel(
                 _uiState.update { it.copy(
                     cashuProofs = updatedProofs,
                     cashuBalanceSat = updatedProofs.sumOf { p -> p.amount },
+                    cashuCounter = currentCounter,
                     cashuGeneratedToken = tokenStr,
                     cashuSendAmountInput = "",
                     cashuLoading = false
@@ -2279,27 +2392,24 @@ class NfcViewModel(
                 val satKeyset = keysets.firstOrNull { it.unit == "sat" } 
                     ?: throw Exception("No sat keyset found at token mint")
                     
+                val seed = deriveCashuMasterSeed() 
+                    ?: throw Exception("Wallet is locked or no seed phrase found")
                 val parts = splitAmount(amount)
                 val secrets = mutableListOf<String>()
                 val rs = mutableListOf<BigInteger>()
                 val blindedMessages = mutableListOf<BlindedMessage>()
-                val secureRandom = java.security.SecureRandom()
+                
+                var currentCounter = _uiState.value.cashuCounter
                 
                 parts.forEach { partAmount ->
-                    val secBytes = ByteArray(32).apply { secureRandom.nextBytes(this) }
-                    val secret = secBytes.joinToString("") { "%02x".format(it) }
-                    
-                    var r: BigInteger
-                    do {
-                        r = BigInteger(256, secureRandom)
-                    } while (r.compareTo(Secp256k1Math.N) >= 0 || r.signum() == 0)
-                    
+                    val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, currentCounter)
                     val B_point = CashuEngine.blind(secret, r)
                     val B_hex = B_point.toHex()
                     
                     secrets.add(secret)
                     rs.add(r)
                     blindedMessages.add(BlindedMessage(amount = partAmount, id = satKeyset.id, B_ = B_hex))
+                    currentCounter++
                 }
                 
                 val signatures = CashuClient.swapTokens(tokenMint, tokenProofs, blindedMessages)
@@ -2323,6 +2433,7 @@ class NfcViewModel(
                 _uiState.update { it.copy(
                     cashuProofs = updatedProofs,
                     cashuBalanceSat = updatedProofs.sumOf { p -> p.amount },
+                    cashuCounter = currentCounter,
                     cashuReceiveTokenInput = "",
                     cashuLoading = false
                 ) }
@@ -2377,28 +2488,25 @@ class NfcViewModel(
                 val secrets = mutableListOf<String>()
                 val rs = mutableListOf<BigInteger>()
                 val blindedMessages = mutableListOf<BlindedMessage>()
-                val secureRandom = java.security.SecureRandom()
+                
+                var currentCounter = _uiState.value.cashuCounter
                 
                 if (changeParts.isNotEmpty()) {
+                    val seed = deriveCashuMasterSeed() 
+                        ?: throw Exception("Wallet is locked or no seed phrase found")
                     val keysets = CashuClient.fetchKeysets(mintUrl)
                     val satKeyset = keysets.firstOrNull { it.unit == "sat" } 
                         ?: throw Exception("No sat keyset found at mint")
                         
                     changeParts.forEach { partAmount ->
-                        val secBytes = ByteArray(32).apply { secureRandom.nextBytes(this) }
-                        val secret = secBytes.joinToString("") { "%02x".format(it) }
-                        
-                        var r: BigInteger
-                        do {
-                            r = BigInteger(256, secureRandom)
-                        } while (r.compareTo(Secp256k1Math.N) >= 0 || r.signum() == 0)
-                        
+                        val (secret, r) = CashuEngine.deriveSecretAndR(seed, satKeyset.id, currentCounter)
                         val B_point = CashuEngine.blind(secret, r)
                         val B_hex = B_point.toHex()
                         
                         secrets.add(secret)
                         rs.add(r)
                         blindedMessages.add(BlindedMessage(amount = partAmount, id = satKeyset.id, B_ = B_hex))
+                        currentCounter++
                     }
                 }
                 
@@ -2444,6 +2552,7 @@ class NfcViewModel(
                 _uiState.update { it.copy(
                     cashuProofs = updatedProofs,
                     cashuBalanceSat = updatedProofs.sumOf { p -> p.amount },
+                    cashuCounter = currentCounter,
                     cashuMeltQuote = null,
                     cashuMeltInvoice = "",
                     cashuMeltSuccessPreimage = response.preimage ?: "Success (no preimage)",
@@ -2588,6 +2697,7 @@ class NfcViewModel(
         val restoredProofsJson = savedStateHandle.get<String>(KEY_CASHU_PROOFS).orEmpty()
         val restoredProofs = parseProofsJson(restoredProofsJson)
         val balance = restoredProofs.sumOf { it.amount }
+        val restoredCounter = savedStateHandle.get<Long>(KEY_CASHU_COUNTER) ?: 0L
 
         val restoredReadMessage = getInMemoryReadMessage()
         val derivedList = restoredReadMessage?.let { deriveBitcoinAddressesAll(it) }
@@ -2609,6 +2719,7 @@ class NfcViewModel(
             cashuMintUrl = restoredMintUrl,
             cashuProofs = restoredProofs,
             cashuBalanceSat = balance,
+            cashuCounter = restoredCounter,
             readMessage = restoredReadMessage,
             derivedAddresses = derived,
             derivedAddressesList = derivedList,
@@ -2642,6 +2753,7 @@ class NfcViewModel(
         persistLastTagInfo(state.lastTagInfo)
         savedStateHandle[KEY_CASHU_MINT_URL] = state.cashuMintUrl
         savedStateHandle[KEY_CASHU_PROOFS] = serializeProofsJson(state.cashuProofs)
+        savedStateHandle[KEY_CASHU_COUNTER] = state.cashuCounter
         setInMemoryReadMessage(state.readMessage)
     }
 
@@ -2851,6 +2963,7 @@ class NfcViewModel(
         const val keyLastTagTechnologies = "last_tag_technologies"
         const val KEY_CASHU_MINT_URL = "cashu_mint_url"
         const val KEY_CASHU_PROOFS = "cashu_proofs_json"
+        const val KEY_CASHU_COUNTER = "cashu_counter"
 
         @Volatile
         private var inMemoryReadMessage: String? = null
@@ -2868,6 +2981,28 @@ class NfcViewModel(
             result[i / 2] = substring(i, i + 2).toInt(16).toByte()
         }
         return result
+    }
+
+    private fun deriveCashuMasterSeed(): ByteArray? {
+        val mnemonic = _uiState.value.readMessage ?: return null
+        val clean = mnemonic.trim()
+        val words = clean.lowercase().split(Regex("\\s+"))
+        if (words.size == 12 || words.size == 24) {
+            return try {
+                MnemonicCode.toSeed(words, "")
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val nsecPrivKey = KeyParser.parseNsec(clean)
+        if (nsecPrivKey != null) {
+            return nsecPrivKey.value.toByteArray()
+        }
+        val parsedPrivKey = KeyParser.parsePrivateKey(clean)
+        if (parsedPrivKey != null) {
+            return parsedPrivKey.value.toByteArray()
+        }
+        return null
     }
 
     private fun defaultReadStatus(): StatusMessage =
