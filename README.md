@@ -1,6 +1,6 @@
 # NFCommunicator
 
-**NFCommunicator is an offline cryptographic identity wallet.** It uses inexpensive, physical NFC cards as encrypted portable storage for Bitcoin wallet seeds, Nostr identities, Cashu credentials, and secure messages. 
+**NFCommunicator is an offline cryptographic identity wallet that stores encrypted secrets on inexpensive NFC cards.** It securely manages Bitcoin wallet seeds, Nostr identities, Cashu credentials, and private messages without relying on cloud services or permanently storing secrets on your phone.  
 
 ---
 
@@ -15,12 +15,12 @@
 
 ---
 
-## Comparison Matrix
+## Feature Comparison
 
 | Feature | NFCommunicator | Typical Hardware Wallet | Standard Software Wallet |
 | :--- | :---: | :---: | :---: |
 | **Offline Secret Storage** | NFC Card | Secure Element | Device Storage |
-| **Offline Transaction Signing** | ✅ | ✅ | Some |
+| **Local Transaction Signing** | ✅ | ✅ | ✅ |
 | **Nostr Signer (NIP-55)** | ✅ | Rare | Some |
 | **Cashu** | ✅ | Rare | Some |
 | **Silent Payments** | ✅ | Rare | Rare |
@@ -49,15 +49,39 @@
 
 ---
 
+## Security Model
+
+*   **✓ Sealed Cards**: Private keys never leave the NFC card unencrypted.
+*   **✓ Zero Logs**: Passwords and decryption pins are never written to permanent disk storage or system logs.
+*   **✓ Volatile Memory Only**: Decrypted seeds, private keys, and Nostr keys exist strictly in volatile RAM.
+*   **✓ Auto-Wiping**: Active wallet memory is immediately purged and garbage-collected when the wallet is closed.
+*   **✓ No Cloud Sync**: Complete absence of network backups, cloud synchronization, or remote telemetry.
+*   **✓ Local Cryptography**: Private keys are decrypted and transactions are built/signed entirely on-device.
+*   **✓ Auditable**: 100% open source, deterministic, and independently auditable build system.
+
+---
+
 ## Screenshots
 
 | Wallet Dashboard | NFC Scan Dialog | Read & Decrypt |
 | :---: | :---: | :---: |
-| ![Wallet](docs/screenshots/wallet.png) | ![Scan Dialog](docs/screenshots/scan_dialog.png) | ![Read Screen](docs/screenshots/read.png) |
+| [![Wallet](docs/screenshots/wallet.png)](docs/screenshots/wallet.png) | [![Scan Dialog](docs/screenshots/scan_dialog.png)](docs/screenshots/scan_dialog.png) | [![Read Screen](docs/screenshots/read.png)](docs/screenshots/read.png) |
 
-| Write & Backup | Nostr Signer Prompt | Cashu Wallet |
+| Write & Backup | Nostr Signer Prompt | Coin Control |
 | :---: | :---: | :---: |
-| ![Write Screen](docs/screenshots/write.png) | ![Nostr Signer](docs/screenshots/nostr_signer.png) | ![Cashu Wallet](docs/screenshots/ecash.png) |
+| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/coin_control.png)](docs/screenshots/coin_control.png) |
+
+---
+
+## Installation
+
+### Option A: Install via Release APK (Recommended)
+1. Go to the [Releases](https://github.com/Mnpezz/NFCommunicator/releases) page of this repository on GitHub.
+2. Download the latest compiled production APK.
+3. Open the APK on your Android device and confirm installation (you may need to enable "Allow installation from unknown sources" in Android settings).
+
+### Option B: Build from Source
+If you prefer to compile and install the application yourself, proceed to the [Build Instructions](#build-instructions) section below.
 
 ---
 
