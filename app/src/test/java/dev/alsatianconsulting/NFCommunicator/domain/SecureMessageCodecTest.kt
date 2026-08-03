@@ -134,4 +134,32 @@ class SecureMessageCodecTest {
         )
         SecureMessageCodec.decryptPayload(payload, "incorrect-password")
     }
+
+    @Test
+    fun customIterationsRoundTrip() {
+        val password = "high-security-password"
+        val message = "This payload is encrypted with 2,000,000 PBKDF2 iterations."
+
+        // Encrypt with 2,000,000 iterations
+        val payload = SecureMessageCodec.encryptToPayload(message, password, iterations = 2_000_000)
+        
+        // Decrypt (should automatically detect and decrypt using trial iterations)
+        val decrypted = SecureMessageCodec.decryptPayload(payload, password)
+
+        assertEquals(message, decrypted)
+    }
+
+    @Test
+    fun customIterationsShareRoundTrip() {
+        val password = "share-password"
+        val share = byteArrayOf(1, 2, 3, 4, 5)
+
+        // Encrypt share with 2,000,000 iterations
+        val payload = SecureMessageCodec.encryptShareToPayload(share, password, iterations = 2_000_000)
+
+        // Decrypt share (should automatically detect and decrypt using trial iterations)
+        val decrypted = SecureMessageCodec.decryptSharePayload(payload, password)
+
+        assertArrayEquals(share, decrypted)
+    }
 }

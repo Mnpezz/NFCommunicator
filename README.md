@@ -10,6 +10,9 @@ A secure, offline NFC messaging and cryptographic key storage tool. Encrypt, wri
   - Split backups using Shamir's Secret Sharing (SSS) to split seed phrases across multiple physical NFC tags with adjustable thresholds (e.g. 2-of-3 tags).
 - **On-Chain Bitcoin Wallet**:
   - Derives Legacy, Nested SegWit, Native SegWit, and Taproot addresses from mnemonics or imported private keys.
+  - **Default Wallet Address**: Prioritizes **Native SegWit (BIP-84)** and **Taproot (BIP-86)** at the top of the wallet screen and address selectors (moving Legacy to the bottom) for modern transactions.
+  - **Silent Payments (BIP-352) Generation**: Automatically derives Scan (`m/352'/0'/0'/1'/0`) and Spend (`m/352'/0'/0'/0'/0`) private keys from BIP-39 mnemonics and encodes them into a standard Bech32m-formatted Silent Payment address (`sp1...`).
+  - **Silent Payments (BIP-352) Sending**: Fully supports building, signing, and sending coin-controlled inputs to external Silent Payment addresses.
   - **HD Address Rotation**: Automatically derives a 10-address index window (0 to 9) to scan balances and UTXOs in parallel, presenting a fresh receiving address to prevent address reuse.
   - **Coin Control**: Displays UTXOs with detailed derivation index (e.g., `Index #1`) and address information, giving users complete control over which inputs to spend.
   - **Multi-Index Signing**: Securely constructs and signs multi-input transactions using the corresponding derived private keys across the address window.
@@ -28,7 +31,11 @@ A secure, offline NFC messaging and cryptographic key storage tool. Encrypt, wri
 
 - One encrypted message per card.
 - Offline only. No accounts, sync, or stored passwords.
-- Encryption: AES-256-GCM with PBKDF2-HMAC-SHA256 derived keys.
+- **Password Hardening & Key Derivation**: Standardized on AES-256-GCM with PBKDF2-HMAC-SHA256 using a default work factor of **2,000,000 iterations** for hardened offline brute-force cracking resistance. Falls back to **600,000 iterations** for backward compatibility with older written tags.
+- **Zeroing & Memory Purging Policy**:
+  - Automatically wipes plaintext password buffers from volatile state on tab selection changes, scan cancellation, and wallet closure.
+  - Nulls the decrypted seed mnemonic, private keys, and Nostr credentials from memory when closing the wallet.
+  - Offers a `"Forget Card"` option in the UI to instantly wipe the cached raw encrypted NDEF tag payload from the device's volatile memory.
 - Clear card: overwrite NDEF tags with an empty NDEF message or zero the app's raw MIFARE Classic storage region.
 - Broad compatibility target: any NFC tag Android can access through standard NDEF APIs, plus raw MIFARE Classic when the handset exposes that tech.
 
@@ -53,6 +60,10 @@ Raw MIFARE Classic support intentionally skips sector 0 and all sector trailer b
 - **Write**: enter password twice, type a plain-text message, review the estimated encrypted size for both NDEF and raw MIFARE Classic storage, tap `Write to Card`, and scan the tag.
 - **Clear Card**: available from both tabs and clears the active storage backend for the scanned tag.
 - Pending scans lock the active form fields and tabs so the captured password/message cannot drift before the tag is processed.
+- **Full-Screen Scan Dialog**: Scanning displays a persistent full-screen dialog overlay featuring a dynamic canvas radar pulse wave animation. The overlay remains visible on the screen during the entire background card-interaction phase (encrypting, writing, signing, clearing) and expensive cached decryption PBKDF2 derivations ("Decrypting Cached Wallet") to prevent premature UI dismissals.
+- **Address-Specific Dashboards**:
+  - Hides the **Coin Control** card for `Nostr Taproot` since general coin-controlled UTXO spending is not performed from this address.
+  - Hides **both** the **Balance** card and the **Coin Control** card when `Silent Payment (BIP-352)` is active, replacing them with a warning card advising the user to import their BIP-39 mnemonic seed into a dedicated BIP-352 scanner (like Cake Wallet or Sparrow Wallet).
 - The app gives immediate haptic feedback on tag detection plus a success/error toast and vibration when the NFC operation completes.
 - Password fields are cleared after each completed read, write, or clear operation, and the read screen lets you select or copy the decrypted message.
 - When the last scanned tag exposes an exact capacity, the write screen shows the maximum unencrypted character count that fits on that backend and keeps a live character count for the message draft.
@@ -63,4 +74,3 @@ Raw MIFARE Classic support intentionally skips sector 0 and all sector trailer b
 - The UI uses a dark-only Material 3 theme built from `#E87722` and darker/lighter orange-derived shades.
 - Reader mode stays active while the app is in the foreground, so tags now produce passive detection feedback and update the last scanned tag summary even before `Read`, `Write`, or `Clear` is armed.
 - On the `Read` tab specifically, passive detection now reads and caches compatible encrypted payloads automatically instead of waiting for a manual scan-arm action.
-

@@ -115,7 +115,10 @@ sealed interface PendingScanAction {
         val message: String,
         val isDuress: Boolean = false,
         val emergencyPassword: String = "",
-        val emergencyMessage: String = ""
+        val emergencyMessage: String = "",
+        val iterations: Int = 600000,
+        val currentIndex: Int = 0,
+        val targetCount: Int = 1
     ) : PendingScanAction
     data class Clear(val origin: AppScreen) : PendingScanAction
     data class Sign(
@@ -175,6 +178,8 @@ data class MainUiState(
     val writeEmergencyPasswordConfirmation: String = "",
     val writeEmergencyMessage: String = "",
     val generatedEmergencyMnemonic: String? = null,
+    val writePbkdf2Iterations: Int = 2000000,
+    val writeBackupsCount: Int = 1,
     
     // Wallet Engine State
     val walletBalance: Long? = null,
@@ -475,7 +480,16 @@ class NfcViewModel(
     }
 
     fun setSelectedScreen(screen: AppScreen) {
-        _uiState.update { it.copy(selectedScreen = screen) }
+        _uiState.update {
+            it.copy(
+                selectedScreen = screen,
+                readPassword = "",
+                writePassword = "",
+                writePasswordConfirmation = "",
+                writeEmergencyPassword = "",
+                writeEmergencyPasswordConfirmation = ""
+            )
+        }
     }
 
     fun updateReadPassword(value: String) {
@@ -658,15 +672,23 @@ class NfcViewModel(
                             it.copy(writeStatus = StatusMessage("Error generating secret shares: ${e.message}", isError = true))
                         }
                     } else {
+                        val statusText = if (state.writeBackupsCount > 1) {
+                            "Ready to scan card 1 of ${state.writeBackupsCount} for backup writing."
+                        } else {
+                            "Ready to scan a tag for writing."
+                        }
                         it.copy(
                             pendingScanAction = PendingScanAction.Write(
                                 password = state.writePassword,
                                 message = state.writeMessage,
                                 isDuress = state.writeIsDuressEnabled,
                                 emergencyPassword = state.writeEmergencyPassword,
-                                emergencyMessage = state.writeEmergencyMessage
+                                emergencyMessage = state.writeEmergencyMessage,
+                                iterations = state.writePbkdf2Iterations,
+                                currentIndex = 0,
+                                targetCount = state.writeBackupsCount
                             ),
-                            writeStatus = StatusMessage("Ready to scan a tag for writing."),
+                            writeStatus = StatusMessage(statusText),
                         )
                     }
                 }
@@ -676,6 +698,14 @@ class NfcViewModel(
 
     fun updateWriteIsMultiNfcSplit(enabled: Boolean) {
         _uiState.update { it.copy(writeIsMultiNfcSplit = enabled) }
+    }
+
+    fun onWritePbkdf2IterationsChanged(iterations: Int) {
+        _uiState.update { it.copy(writePbkdf2Iterations = iterations) }
+    }
+
+    fun onWriteBackupsCountChanged(count: Int) {
+        _uiState.update { it.copy(writeBackupsCount = count.coerceIn(1, 5)) }
     }
 
     fun updateWriteMultiNfcN(n: Int) {
@@ -963,9 +993,33 @@ class NfcViewModel(
             return
         }
 
-        _uiState.update { it.copy(pendingScanAction = null) }
+        _uiState.update {
+            it.copy(
+                pendingScanAction = null,
+                readPassword = "",
+                writePassword = "",
+                writePasswordConfirmation = "",
+                writeEmergencyPassword = "",
+                writeEmergencyPasswordConfirmation = ""
+            )
+        }
         updateStatusForScreen(state.selectedScreen, "Scan cancelled.", false)
-     }
+    }
+
+    fun forgetCard() {
+        val state = _uiState.value
+        if (state.isProcessing) {
+            return
+        }
+        cachedReadPayload = null
+        _uiState.update {
+            it.copy(
+                lastTagInfo = null,
+                readPassword = "",
+                readStatus = StatusMessage("Scanned card forgotten from memory.", isError = false)
+            )
+        }
+    }
 
     fun startQrScan(target: QrTargetField) {
         _uiState.update { it.copy(showQrScanner = true, qrTargetField = target) }
@@ -1010,10 +1064,14 @@ class NfcViewModel(
 
     fun closeWallet() {
         onBreezDisconnect()
+        setInMemoryReadMessage(null)
         _uiState.update {
             it.copy(
                 derivedAddresses = null,
                 readMessage = null,
+                readPassword = "",
+                readStatus = defaultReadStatus(),
+                writeStatus = defaultWriteStatus(),
                 walletBalance = null,
                 walletUtxos = null,
                 sendRecipient = "",
@@ -1078,6 +1136,24 @@ class NfcViewModel(
     }
 
     private fun fetchBitcoinBalanceAndUtxos(addresses: List<String>) {
+        if (addresses.any { dev.alsatianconsulting.NFCommunicator.domain.WalletEngine.isSilentPaymentAddress(it) }) {
+            _uiState.update { state ->
+                val nextDerivedAddresses = state.derivedAddressesList?.mapValues { entry ->
+                    entry.value.firstOrNull() ?: ""
+                }
+                state.copy(
+                    walletBalance = 0L,
+                    walletUtxos = emptyList(),
+                    selectedUtxoIds = emptySet(),
+                    activeAddressIndex = 0,
+                    derivedAddresses = nextDerivedAddresses ?: state.derivedAddresses,
+                    isFetchingBalance = false,
+                    readStatus = StatusMessage("You can use this address to receive funds attached to your private key. At this time Silent Payment balance scanning is not supported on this app. Use a full BIP-352 wallet, like Cake Wallet or Sparrow Wallet, to scan for incoming payments. You can access these funds by importing your seed phrase into one of those wallets.", isError = false)
+                )
+            }
+            return
+        }
+
         _uiState.update { it.copy(isFetchingBalance = true) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -1288,7 +1364,6 @@ class NfcViewModel(
                 when (action) {
                 is PendingScanAction.Read -> {
                     state.copy(
-                        pendingScanAction = null,
                         isProcessing = true,
                         readMessage = null,
                         readStatus = StatusMessage("Reading the encrypted message..."),
@@ -1297,7 +1372,6 @@ class NfcViewModel(
 
                 is PendingScanAction.Write -> {
                     state.copy(
-                        pendingScanAction = null,
                         isProcessing = true,
                         writeStatus = StatusMessage("Encrypting and writing the message..."),
                     )
@@ -1307,14 +1381,12 @@ class NfcViewModel(
                     val status = StatusMessage("Clearing the tag...")
                     if (action.origin == AppScreen.Read) {
                         state.copy(
-                            pendingScanAction = null,
                             isProcessing = true,
                             readMessage = null,
                             readStatus = status,
                         )
                     } else {
                         state.copy(
-                            pendingScanAction = null,
                             isProcessing = true,
                             writeStatus = status,
                         )
@@ -1323,7 +1395,6 @@ class NfcViewModel(
 
                 is PendingScanAction.Sign -> {
                     state.copy(
-                        pendingScanAction = null,
                         isProcessing = true,
                         readStatus = StatusMessage("Decrypting seed and signing transaction..."),
                     )
@@ -1357,7 +1428,8 @@ class NfcViewModel(
                             message = action.message,
                             isDuress = action.isDuress,
                             emergencyPassword = action.emergencyPassword,
-                            emergencyMessage = action.emergencyMessage
+                            emergencyMessage = action.emergencyMessage,
+                            iterations = action.iterations
                         )
                         is PendingScanAction.Clear -> tagService.clearTag(tag)
                         is PendingScanAction.WriteShare -> {
@@ -1505,6 +1577,7 @@ class NfcViewModel(
                         }
                         val nostrKeys = result.decryptedMessage?.let { NostrEngine.deriveNostrKeys(it) }
                         nextState.copy(
+                            pendingScanAction = null,
                             readPassword = "",
                             readMessage = result.decryptedMessage,
                             derivedAddresses = derived,
@@ -1519,19 +1592,31 @@ class NfcViewModel(
 
                     is PendingScanAction.Write -> {
                         if (result.isSuccess) {
-                            nextState.copy(
-                                writePassword = "",
-                                writePasswordConfirmation = "",
-                                writeMessage = "",
-                                estimatedNdefWriteSizeBytes = 0,
-                                estimatedMifareClassicWriteSizeBytes = 0,
-                                writeStatus = result.asStatusMessage(),
-                            )
+                            val nextIndex = action.currentIndex + 1
+                            if (nextIndex < action.targetCount) {
+                                nextState.copy(
+                                    pendingScanAction = action.copy(currentIndex = nextIndex),
+                                    writeStatus = StatusMessage("Backup tag ${nextIndex} of ${action.targetCount} written successfully. Ready to scan card ${nextIndex + 1} of ${action.targetCount}."),
+                                )
+                            } else {
+                                nextState.copy(
+                                    writePassword = "",
+                                    writePasswordConfirmation = "",
+                                    writeMessage = "",
+                                    writeEmergencyPassword = "",
+                                    writeEmergencyPasswordConfirmation = "",
+                                    writeEmergencyMessage = "",
+                                    writeIsDuressEnabled = false,
+                                    estimatedNdefWriteSizeBytes = 0,
+                                    estimatedMifareClassicWriteSizeBytes = 0,
+                                    writeStatus = StatusMessage("Successfully wrote to all ${action.targetCount} backup tags.", isError = false),
+                                    pendingScanAction = null,
+                                )
+                            }
                         } else {
                             nextState.copy(
-                                writePassword = "",
-                                writePasswordConfirmation = "",
-                                writeStatus = result.asStatusMessage(),
+                                pendingScanAction = action,
+                                writeStatus = StatusMessage("Failed to write tag ${action.currentIndex + 1}: ${result.statusMessage}. Tap tag to retry.", isError = true),
                             )
                         }
                     }
@@ -1539,6 +1624,7 @@ class NfcViewModel(
                     is PendingScanAction.Clear -> {
                         if (action.origin == AppScreen.Read) {
                             nextState.copy(
+                                pendingScanAction = null,
                                 readPassword = "",
                                 readMessage = null,
                                 derivedAddresses = null,
@@ -1551,6 +1637,7 @@ class NfcViewModel(
                             )
                         } else {
                             nextState.copy(
+                                pendingScanAction = null,
                                 writePassword = "",
                                 writePasswordConfirmation = "",
                                 writeStatus = result.asStatusMessage(),
@@ -1570,6 +1657,7 @@ class NfcViewModel(
                                 }
                             }
                             nextState.copy(
+                                pendingScanAction = null,
                                 sendRecipient = "",
                                 sendAmount = "",
                                 confirmPassword = "",
@@ -1579,6 +1667,7 @@ class NfcViewModel(
                             )
                         } else {
                             nextState.copy(
+                                pendingScanAction = null,
                                 confirmPassword = "",
                                 broadcastError = result.statusMessage,
                                 broadcastTxId = null,
@@ -1851,10 +1940,10 @@ class NfcViewModel(
             return try {
                 val pubkey = parsedPrivKey.publicKey()
                 mapOf(
-                    "Legacy (BIP-44)" to pubkey.p2pkhAddress(Block.LivenetGenesisBlock.hash),
-                    "Nested SegWit (BIP-49)" to pubkey.p2shOfP2wpkhAddress(Block.LivenetGenesisBlock.hash),
                     "Native SegWit (BIP-84)" to pubkey.p2wpkhAddress(Block.LivenetGenesisBlock.hash),
-                    "Taproot (BIP-86)" to pubkey.p2trAddress(Block.LivenetGenesisBlock.hash)
+                    "Taproot (BIP-86)" to pubkey.p2trAddress(Block.LivenetGenesisBlock.hash),
+                    "Nested SegWit (BIP-49)" to pubkey.p2shOfP2wpkhAddress(Block.LivenetGenesisBlock.hash),
+                    "Legacy (BIP-44)" to pubkey.p2pkhAddress(Block.LivenetGenesisBlock.hash)
                 )
             } catch (e: Exception) {
                 null
@@ -1869,10 +1958,10 @@ class NfcViewModel(
             val master = DeterministicWallet.generate(seed)
 
             val paths = mapOf(
-                "Legacy (BIP-44)" to "m/44'/0'/0'/0/0",
-                "Nested SegWit (BIP-49)" to "m/49'/0'/0'/0/0",
                 "Native SegWit (BIP-84)" to "m/84'/0'/0'/0/0",
-                "Taproot (BIP-86)" to "m/86'/0'/0'/0/0"
+                "Taproot (BIP-86)" to "m/86'/0'/0'/0/0",
+                "Nested SegWit (BIP-49)" to "m/49'/0'/0'/0/0",
+                "Legacy (BIP-44)" to "m/44'/0'/0'/0/0"
             )
 
             val hdAddresses = paths.mapValues { (_, path) ->
@@ -1890,7 +1979,19 @@ class NfcViewModel(
             val nostrDerived = DeterministicWallet.derivePrivateKey(master, NostrEngine.NOSTR_DERIVATION_PATH)
             val nostrTaproot = nostrDerived.publicKey.p2trAddress(Block.LivenetGenesisBlock.hash)
 
-            hdAddresses + mapOf("Nostr Taproot" to nostrTaproot)
+            // 6th type: Silent Payment (BIP-352) scan/spend keys and Bech32m address
+            val scanDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/1'/0")
+            val spendDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/0'/0")
+            val spAddress = dev.alsatianconsulting.NFCommunicator.domain.WalletEngine.encodeSilentPaymentAddress(
+                "sp",
+                scanDerived.publicKey.value.toByteArray(),
+                spendDerived.publicKey.value.toByteArray()
+            )
+
+            hdAddresses + mapOf(
+                "Nostr Taproot" to nostrTaproot,
+                "Silent Payment (BIP-352)" to spAddress
+            )
         } catch (e: Exception) {
             null
         }
@@ -1915,10 +2016,10 @@ class NfcViewModel(
             return try {
                 val pubkey = parsedPrivKey.publicKey()
                 mapOf(
-                    "Legacy (BIP-44)" to listOf(pubkey.p2pkhAddress(Block.LivenetGenesisBlock.hash)),
-                    "Nested SegWit (BIP-49)" to listOf(pubkey.p2shOfP2wpkhAddress(Block.LivenetGenesisBlock.hash)),
                     "Native SegWit (BIP-84)" to listOf(pubkey.p2wpkhAddress(Block.LivenetGenesisBlock.hash)),
-                    "Taproot (BIP-86)" to listOf(pubkey.p2trAddress(Block.LivenetGenesisBlock.hash))
+                    "Taproot (BIP-86)" to listOf(pubkey.p2trAddress(Block.LivenetGenesisBlock.hash)),
+                    "Nested SegWit (BIP-49)" to listOf(pubkey.p2shOfP2wpkhAddress(Block.LivenetGenesisBlock.hash)),
+                    "Legacy (BIP-44)" to listOf(pubkey.p2pkhAddress(Block.LivenetGenesisBlock.hash))
                 )
             } catch (e: Exception) {
                 null
@@ -1933,10 +2034,10 @@ class NfcViewModel(
             val master = DeterministicWallet.generate(seed)
 
             val basePaths = mapOf(
-                "Legacy (BIP-44)" to "m/44'/0'/0'/0/",
-                "Nested SegWit (BIP-49)" to "m/49'/0'/0'/0/",
                 "Native SegWit (BIP-84)" to "m/84'/0'/0'/0/",
-                "Taproot (BIP-86)" to "m/86'/0'/0'/0/"
+                "Taproot (BIP-86)" to "m/86'/0'/0'/0/",
+                "Nested SegWit (BIP-49)" to "m/49'/0'/0'/0/",
+                "Legacy (BIP-44)" to "m/44'/0'/0'/0/"
             )
 
             val hdAddresses = basePaths.mapValues { (_, basePath) ->
@@ -1957,7 +2058,19 @@ class NfcViewModel(
             val nostrDerived = DeterministicWallet.derivePrivateKey(master, NostrEngine.NOSTR_DERIVATION_PATH)
             val nostrTaproot = nostrDerived.publicKey.p2trAddress(Block.LivenetGenesisBlock.hash)
 
-            hdAddresses + mapOf("Nostr Taproot" to listOf(nostrTaproot))
+            // 6th type: Silent Payment (BIP-352) scan/spend keys and Bech32m address
+            val scanDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/1'/0")
+            val spendDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/0'/0")
+            val spAddress = dev.alsatianconsulting.NFCommunicator.domain.WalletEngine.encodeSilentPaymentAddress(
+                "sp",
+                scanDerived.publicKey.value.toByteArray(),
+                spendDerived.publicKey.value.toByteArray()
+            )
+
+            hdAddresses + mapOf(
+                "Nostr Taproot" to listOf(nostrTaproot),
+                "Silent Payment (BIP-352)" to listOf(spAddress)
+            )
         } catch (e: Exception) {
             null
         }
@@ -2026,7 +2139,7 @@ class NfcViewModel(
 
         val message = when (this) {
             is PendingScanAction.Read -> "Message decrypted."
-            is PendingScanAction.Write -> "Message written."
+            is PendingScanAction.Write -> "Backup tag ${currentIndex + 1} of $targetCount written."
             is PendingScanAction.Clear -> "Card cleared."
             is PendingScanAction.Sign -> "Transaction broadcasted."
             is PendingScanAction.WriteShare -> "Share ${currentIndex + 1} written."

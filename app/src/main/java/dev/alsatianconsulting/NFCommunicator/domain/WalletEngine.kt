@@ -240,6 +240,17 @@ object WalletEngine {
         return Pair(scanPubKey, spendPubKey)
     }
 
+    fun encodeSilentPaymentAddress(hrp: String, scanPubKey: ByteArray, spendPubKey: ByteArray): String {
+        val payload = ByteArray(66)
+        System.arraycopy(scanPubKey, 0, payload, 0, 33)
+        System.arraycopy(spendPubKey, 0, payload, 33, 33)
+        val payload5Bit = convertBits(payload, 8, 5, true)
+        val data5Bit = ByteArray(payload5Bit.size + 1)
+        data5Bit[0] = 0 // version 0
+        System.arraycopy(payload5Bit, 0, data5Bit, 1, payload5Bit.size)
+        return Bech32.encode(hrp, data5Bit.toTypedArray(), Bech32.Encoding.Bech32m)
+    }
+
     private fun serializeOutpoint(txid: String, vout: Int): ByteArray {
         val txidBytes = hexToBytes(txid).reversedArray()
         val voutBytes = ByteArray(4)

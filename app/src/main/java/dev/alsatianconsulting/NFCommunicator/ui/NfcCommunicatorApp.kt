@@ -58,6 +58,12 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
@@ -82,6 +88,7 @@ import dev.alsatianconsulting.NFCommunicator.MIN_PASSWORD_LENGTH
 import dev.alsatianconsulting.NFCommunicator.MainUiState
 import dev.alsatianconsulting.NFCommunicator.StatusMessage
 import dev.alsatianconsulting.NFCommunicator.QrTargetField
+import dev.alsatianconsulting.NFCommunicator.PendingScanAction
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -162,6 +169,8 @@ fun NfcCommunicatorApp(
     onWriteIsMultiNfcSplitChanged: (Boolean) -> Unit,
     onWriteMultiNfcNChanged: (Int) -> Unit,
     onWriteMultiNfcKChanged: (Int) -> Unit,
+    onWritePbkdf2IterationsChanged: (Int) -> Unit = {},
+    onWriteBackupsCountChanged: (Int) -> Unit = {},
     onBreezApiKeyChanged: (String) -> Unit = {},
     onBreezNetworkChanged: (String) -> Unit = {},
     onBreezConnect: (java.io.File) -> Unit = {},
@@ -214,7 +223,8 @@ fun NfcCommunicatorApp(
     onToggleAutoSignKind5: (Boolean) -> Unit = {},
     onToggleAutoSignNipEncrypt: (Boolean) -> Unit = {},
     onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {},
-    onDismissNostrError: () -> Unit = {}
+    onDismissNostrError: () -> Unit = {},
+    onForgetCard: () -> Unit = {}
 ) {
     if (uiState.nostrSignerRequest != null) {
         NostrSignerScreen(
@@ -279,6 +289,7 @@ fun NfcCommunicatorApp(
                     onStartRead = onStartRead,
                     onClearCard = onClearCard,
                     onCancelPendingScan = onCancelPendingScan,
+                    onForgetCard = onForgetCard,
                     onRefreshBalance = onRefreshBalance,
                     onSendRecipientChanged = onSendRecipientChanged,
                     onSendAmountChanged = onSendAmountChanged,
@@ -345,6 +356,8 @@ fun NfcCommunicatorApp(
                     onWriteIsMultiNfcSplitChanged = onWriteIsMultiNfcSplitChanged,
                     onWriteMultiNfcNChanged = onWriteMultiNfcNChanged,
                     onWriteMultiNfcKChanged = onWriteMultiNfcKChanged,
+                    onWritePbkdf2IterationsChanged = onWritePbkdf2IterationsChanged,
+                    onWriteBackupsCountChanged = onWriteBackupsCountChanged,
                     onWriteIsDuressEnabledChanged = onWriteIsDuressEnabledChanged,
                     onWriteEmergencyPasswordChanged = onWriteEmergencyPasswordChanged,
                     onWriteEmergencyPasswordConfirmationChanged = onWriteEmergencyPasswordConfirmationChanged,
@@ -361,6 +374,13 @@ fun NfcCommunicatorApp(
         QrCodeScanner(
             onDismiss = onCancelQrScan,
             onResult = onCompleteQrScan
+        )
+    }
+
+    if (uiState.pendingScanAction != null || uiState.isProcessing) {
+        NfcScanDialog(
+            uiState = uiState,
+            onCancelPendingScan = onCancelPendingScan
         )
     }
 }
@@ -423,7 +443,8 @@ private fun ReadScreen(
     onToggleAutoSignKind31234: (Boolean) -> Unit = {},
     onToggleAutoSignKind5: (Boolean) -> Unit = {},
     onToggleAutoSignNipEncrypt: (Boolean) -> Unit = {},
-    onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {}
+    onToggleAutoSignNipDecrypt: (Boolean) -> Unit = {},
+    onForgetCard: () -> Unit = {}
 ) {
     val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null
     val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
@@ -448,61 +469,76 @@ private fun ReadScreen(
         uiState.readPassword.length < MIN_PASSWORD_LENGTH
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(
-            text = "Hold a tag to the phone on this screen. If it contains this app's encrypted message, the app will detect it automatically. If a password is already entered, the app will try it; otherwise finish typing and tap Try Password.",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-
-        PasswordField(
-            value = uiState.readPassword,
-            onValueChange = onReadPasswordChanged,
-            label = "Password",
-            enabled = inputEnabled,
-            isError = passwordTooShort,
-            supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Button(
-                onClick = onStartRead,
-                enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Try Password")
-            }
-            OutlinedButton(
-                onClick = onClearCard,
-                enabled = !actionsDisabled,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Clear Card")
-            }
-        }
-
-        Button(
-            onClick = onStartMultiNfcUnlock,
-            enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.secondary
+        if (uiState.derivedAddresses == null) {
+            Text(
+                text = "Hold a tag to the phone on this screen. If it contains this app's encrypted message, the app will detect it automatically. If a password is already entered, the app will try it; otherwise finish typing and tap Try Password.",
+                style = MaterialTheme.typography.bodyMedium,
             )
-        ) {
-            Text("Unlock Multi-NFC Wallet (SSS)")
-        }
 
-        if (uiState.pendingScanAction != null) {
-            TextButton(
-                onClick = onCancelPendingScan,
-                enabled = !uiState.isProcessing,
+            PasswordField(
+                value = uiState.readPassword,
+                onValueChange = onReadPasswordChanged,
+                label = "Password",
+                enabled = inputEnabled,
+                isError = passwordTooShort,
+                supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Cancel pending scan")
+                Button(
+                    onClick = onStartRead,
+                    enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Try Password")
+                }
+                if (uiState.lastTagInfo != null) {
+                    OutlinedButton(
+                        onClick = onForgetCard,
+                        enabled = !actionsDisabled,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Forget Card")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onClearCard,
+                        enabled = !actionsDisabled,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Clear Card")
+                    }
+                }
             }
-        }
 
-        StatusPanel(uiState.readStatus)
+            Button(
+                onClick = onStartMultiNfcUnlock,
+                enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary
+                )
+            ) {
+                Text("Unlock Multi-NFC Wallet (SSS)")
+            }
+
+            if (uiState.pendingScanAction != null) {
+                TextButton(
+                    onClick = onCancelPendingScan,
+                    enabled = !uiState.isProcessing,
+                ) {
+                    Text("Cancel pending scan")
+                }
+            }
+
+            StatusPanel(uiState.readStatus)
+        }
 
         if (uiState.derivedAddresses != null) {
             WalletPanel(
@@ -816,6 +852,8 @@ private fun WriteScreen(
     onWriteIsMultiNfcSplitChanged: (Boolean) -> Unit,
     onWriteMultiNfcNChanged: (Int) -> Unit,
     onWriteMultiNfcKChanged: (Int) -> Unit,
+    onWritePbkdf2IterationsChanged: (Int) -> Unit = {},
+    onWriteBackupsCountChanged: (Int) -> Unit = {},
     onWriteIsDuressEnabledChanged: (Boolean) -> Unit = {},
     onWriteEmergencyPasswordChanged: (String) -> Unit = {},
     onWriteEmergencyPasswordConfirmationChanged: (String) -> Unit = {},
@@ -954,6 +992,19 @@ private fun WriteScreen(
             }
         }
 
+        val passwordStrength = when {
+            uiState.writePassword.isBlank() -> null
+            uiState.writePassword.length < 10 -> "Weak"
+            uiState.writePassword.length < 16 -> "Good"
+            else -> "Strong Passphrase"
+        }
+        val passwordStrengthColor = when (passwordStrength) {
+            "Weak" -> Color(0xFFE53935)
+            "Good" -> Color(0xFFFDD835)
+            "Strong Passphrase" -> Color(0xFF43A047)
+            else -> Color.Transparent
+        }
+
         PasswordField(
             value = uiState.writePassword,
             onValueChange = onWritePasswordChanged,
@@ -962,6 +1013,29 @@ private fun WriteScreen(
             isError = writePasswordTooShort,
             supportingText = if (writePasswordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
         )
+
+        if (passwordStrength != null) {
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(horizontal = 4.dp)
+            ) {
+                Text("Password Strength: ", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = passwordStrength,
+                    color = passwordStrengthColor,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (passwordStrength == "Weak") {
+                    Text(
+                        text = " (Encourage using a long passphrase of 4+ words)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
 
         PasswordField(
             value = uiState.writePasswordConfirmation,
@@ -975,6 +1049,47 @@ private fun WriteScreen(
                 null
             },
         )
+
+
+
+        if (!uiState.writeIsMultiNfcSplit) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Number of Backup Tags to Write:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    (1..5).forEach { count ->
+                        val isSelected = uiState.writeBackupsCount == count
+                        OutlinedButton(
+                            onClick = { onWriteBackupsCountChanged(count) },
+                            enabled = inputEnabled,
+                            colors = if (isSelected) {
+                                ButtonDefaults.outlinedButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            } else {
+                                ButtonDefaults.outlinedButtonColors()
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                        ) {
+                            Text(count.toString())
+                        }
+                    }
+                }
+                Text(
+                    text = "Allows writing identical, encrypted physical copies using the same password for redundancy.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
         OutlinedTextField(
             value = uiState.writeMessage,
@@ -1189,33 +1304,35 @@ private fun WriteScreen(
             }
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Checkbox(
-                checked = uiState.writeIsDuressEnabled,
-                onCheckedChange = onWriteIsDuressEnabledChanged,
-                enabled = inputEnabled
-            )
-            Column {
-                Text(
-                    text = "Enable Emergency/Duress Wallet",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold
+        if (isWriteMnemonic) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Checkbox(
+                    checked = uiState.writeIsDuressEnabled,
+                    onCheckedChange = onWriteIsDuressEnabledChanged,
+                    enabled = inputEnabled
                 )
-                Text(
-                    text = "Protects against physical coercion. Allows typing a secondary password to unlock a separate wallet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column {
+                    Text(
+                        text = "Enable Emergency/Duress Wallet",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Protects against physical coercion. Allows typing a secondary password to unlock a separate wallet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
-        if (uiState.writeIsDuressEnabled) {
+        if (isWriteMnemonic && uiState.writeIsDuressEnabled) {
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -1895,145 +2012,176 @@ private fun WalletPanel(
                     }
                 }
 
-                // Balance section
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                if (uiState.activeAddressType == "Silent Payment (BIP-352)") {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column {
-                            Text(
-                                text = "Active Balance",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                            )
-                            val balanceText = when {
-                                uiState.isFetchingBalance -> "Fetching..."
-                                uiState.walletBalance != null -> "${uiState.walletBalance} sats"
-                                else -> "Tap refresh to load"
-                            }
-                            Text(
-                                text = balanceText,
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Black,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                        IconButton(
-                            onClick = onRefreshBalance,
-                            enabled = !uiState.isFetchingBalance
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Refresh balance"
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Notice",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "You can use this address to receive funds attached to your private key. At this time Silent Payment balance scanning is not supported on this app. Use a full BIP-352 wallet, like Cake Wallet or Sparrow Wallet, to scan for incoming payments. You will need to import your seed phrase into one of those wallets to access these funds.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
                             )
                         }
                     }
                 }
 
-                // Coin Control Panel
-                val utxos = uiState.walletUtxos ?: emptyList()
-                var coinControlExpanded by remember { mutableStateOf(false) }
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                // Balance section
+                if (uiState.activeAddressType != "Silent Payment (BIP-352)") {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { coinControlExpanded = !coinControlExpanded }
-                                .padding(vertical = 4.dp),
+                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (coinControlExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = if (coinControlExpanded) "Collapse" else "Expand"
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+                            Column {
                                 Text(
-                                    text = "Coin Control (${utxos.size} UTXOs)",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
+                                    text = "Active Balance",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                                val balanceText = when {
+                                    uiState.isFetchingBalance -> "Fetching..."
+                                    uiState.walletBalance != null -> "${uiState.walletBalance} sats"
+                                    else -> "Tap refresh to load"
+                                }
+                                Text(
+                                    text = balanceText,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Black,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
-                            
-                            val selectedCount = uiState.selectedUtxoIds.size
-                            val selectedSum = utxos
-                                .filter { uiState.selectedUtxoIds.contains("${it.txid}:${it.vout}") }
-                                .sumOf { it.value }
-                            
-                            Text(
-                                text = "Selected: $selectedSum sats ($selectedCount)",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-
-                        if (coinControlExpanded) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            if (utxos.isEmpty()) {
-                                Text(
-                                    text = "No UTXOs available. Receive some funds first.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            IconButton(
+                                onClick = onRefreshBalance,
+                                enabled = !uiState.isFetchingBalance
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Refresh balance"
                                 )
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    utxos.forEach { utxo ->
-                                        val utxoId = "${utxo.txid}:${utxo.vout}"
-                                        val isSelected = uiState.selectedUtxoIds.contains(utxoId)
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable { onToggleUtxoSelection(utxo.txid, utxo.vout) }
-                                                .padding(vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Checkbox(
-                                                checked = isSelected,
-                                                onCheckedChange = { onToggleUtxoSelection(utxo.txid, utxo.vout) }
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween
-                                                ) {
+                            }
+                        }
+                    }
+                }
+
+                // Coin Control Panel
+                if (uiState.activeAddressType != "Silent Payment (BIP-352)" && uiState.activeAddressType != "Nostr Taproot") {
+                    val utxos = uiState.walletUtxos ?: emptyList()
+                    var coinControlExpanded by remember { mutableStateOf(false) }
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { coinControlExpanded = !coinControlExpanded }
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = if (coinControlExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                        contentDescription = if (coinControlExpanded) "Collapse" else "Expand"
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Coin Control (${utxos.size} UTXOs)",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                val selectedCount = uiState.selectedUtxoIds.size
+                                val selectedSum = utxos
+                                    .filter { uiState.selectedUtxoIds.contains("${it.txid}:${it.vout}") }
+                                    .sumOf { it.value }
+
+                                Text(
+                                    text = "Selected: $selectedSum sats ($selectedCount)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            if (coinControlExpanded) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                if (utxos.isEmpty()) {
+                                    Text(
+                                        text = "No UTXOs available. Receive some funds first.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        utxos.forEach { utxo ->
+                                            val utxoId = "${utxo.txid}:${utxo.vout}"
+                                            val isSelected = uiState.selectedUtxoIds.contains(utxoId)
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { onToggleUtxoSelection(utxo.txid, utxo.vout) }
+                                                    .padding(vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(
+                                                    checked = isSelected,
+                                                    onCheckedChange = { onToggleUtxoSelection(utxo.txid, utxo.vout) }
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Text(
+                                                            text = "${utxo.value} sats",
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        Text(
+                                                            text = if (utxo.confirmed) "Confirmed" else "Unconfirmed",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = if (utxo.confirmed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
                                                     Text(
-                                                        text = "${utxo.value} sats",
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = FontWeight.Bold
+                                                        text = "Tx: ${utxo.txid.take(8)}...${utxo.txid.takeLast(8)} vout: ${utxo.vout}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                     )
                                                     Text(
-                                                        text = if (utxo.confirmed) "Confirmed" else "Unconfirmed",
+                                                        text = "Address: ${utxo.address.take(8)}...${utxo.address.takeLast(8)} (Index #${utxo.addressIndex})",
                                                         style = MaterialTheme.typography.bodySmall,
-                                                        color = if (utxo.confirmed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                                        fontWeight = FontWeight.Bold
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                     )
                                                 }
-                                                Text(
-                                                    text = "Tx: ${utxo.txid.take(8)}...${utxo.txid.takeLast(8)} vout: ${utxo.vout}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                                )
-                                                Text(
-                                                    text = "Address: ${utxo.address.take(8)}...${utxo.address.takeLast(8)} (Index #${utxo.addressIndex})",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                                )
                                             }
                                         }
                                     }
@@ -3509,6 +3657,191 @@ fun NostrSignerScreen(
                 StatusPanel(
                     status = StatusMessage(prompt, isError = false)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NfcPulseAnimation(modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "nfc_pulse")
+    val progress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "progress"
+    )
+
+    Box(
+        modifier = modifier.size(160.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = center
+            val cardWidth = 50.dp.toPx()
+            val cardHeight = 35.dp.toPx()
+            
+            // Draw 3 concentric pulsing rings for the radio waves
+            for (i in 0..2) {
+                val ringProgress = (progress + i * 0.33f) % 1f
+                val radius = 25.dp.toPx() + (50.dp.toPx() * ringProgress)
+                val alpha = (1f - ringProgress) * 0.5f
+                
+                // Draw rounded rectangular wave contour
+                drawRoundRect(
+                    color = androidx.compose.ui.graphics.Color(0xFF00E5FF), // Cyber cyan
+                    topLeft = androidx.compose.ui.geometry.Offset(center.x - radius, center.y - radius * 0.7f),
+                    size = androidx.compose.ui.geometry.Size(radius * 2, radius * 1.4f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx()),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
+                    alpha = alpha
+                )
+            }
+            
+            // Draw the central NFC card representation
+            drawRoundRect(
+                color = androidx.compose.ui.graphics.Color(0xFF2979FF), // Bright blue
+                topLeft = androidx.compose.ui.geometry.Offset(center.x - cardWidth / 2, center.y - cardHeight / 2),
+                size = androidx.compose.ui.geometry.Size(cardWidth, cardHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx())
+            )
+            
+            // Draw a chip on the card
+            drawRoundRect(
+                color = androidx.compose.ui.graphics.Color(0xFFFFD54F), // Gold
+                topLeft = androidx.compose.ui.geometry.Offset(center.x - cardWidth / 2 + 6.dp.toPx(), center.y - 6.dp.toPx()),
+                size = androidx.compose.ui.geometry.Size(8.dp.toPx(), 12.dp.toPx()),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx())
+            )
+        }
+    }
+}
+
+@Composable
+fun NfcScanDialog(
+    uiState: MainUiState,
+    onCancelPendingScan: () -> Unit
+) {
+    val action = uiState.pendingScanAction
+    val isProcessing = uiState.isProcessing
+
+    if (action == null && !isProcessing) return
+
+    val (title, instruction) = if (action != null) {
+        when (action) {
+            is PendingScanAction.Read -> {
+                "Decrypting NFC Wallet" to "Hold your encrypted NFC tag against the back of your phone to unlock the wallet."
+            }
+            is PendingScanAction.Write -> {
+                if (action.targetCount > 1) {
+                    "Writing Backup Tag" to "Hold backup tag ${action.currentIndex + 1} of ${action.targetCount} against the back of your phone to write this encrypted backup."
+                } else {
+                    "Writing NFC Wallet" to "Hold tag against the back of your phone to write the encrypted backup."
+                }
+            }
+            is PendingScanAction.WriteShare -> {
+                "Writing SSS Split Share" to "Hold SSS card ${action.currentIndex + 1} of ${action.shares.size} against the back of your phone to write this key share."
+            }
+            is PendingScanAction.ReadShare -> {
+                val gatheredCount = action.gathered.size
+                val kStr = action.thresholdK?.toString() ?: "?"
+                "Unlocking Multi-NFC Wallet" to "Hold SSS card against the back of your phone. Gathered $gatheredCount of $kStr required shares."
+            }
+            is PendingScanAction.Clear -> {
+                "Clearing NFC Tag" to "Hold tag against the back of your phone to erase all data."
+            }
+            is PendingScanAction.Sign -> {
+                "Signing Transaction" to "Hold tag against the back of your phone to authorize and sign the transaction."
+            }
+            else -> "NFC Scan Action" to "Hold tag against the back of your phone."
+        }
+    } else {
+        "Decrypting Cached Wallet" to "Decrypting the encrypted seed phrase from memory..."
+    }
+
+    val statusText = when (uiState.selectedScreen) {
+        AppScreen.Read -> uiState.readStatus.text
+        AppScreen.Write -> uiState.writeStatus.text
+        else -> ""
+    }
+
+    val isError = when (uiState.selectedScreen) {
+        AppScreen.Read -> uiState.readStatus.isError
+        AppScreen.Write -> uiState.writeStatus.isError
+        else -> false
+    }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onCancelPendingScan) {
+        androidx.compose.material3.Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(vertical = 24.dp, horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                NfcPulseAnimation()
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = instruction,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                if (statusText.isNotEmpty()) {
+                    OutlinedCard(
+                        colors = androidx.compose.material3.CardDefaults.outlinedCardColors(
+                            containerColor = if (isError) {
+                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                            } else {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.1f)
+                            }
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(12.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = onCancelPendingScan,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Cancel Scan")
+                }
             }
         }
     }

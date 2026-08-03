@@ -28,7 +28,7 @@ object SecureMessageCodec {
     private const val saltLengthBytes = 16
     private const val nonceLengthBytes = 12
     // OWASP 2023 / NIST SP 800-132: minimum 600 000 iterations for PBKDF2-HMAC-SHA256.
-    private const val pbkdf2Iterations = 600_000
+    private const val pbkdf2Iterations = 2_000_000
     private val secureRandom = SecureRandom()
     // The AAD literal contains an extra 'C' — "NFCCommunicator" instead of "NFCommunicator" —
     // and is intentionally kept as-is for on-tag format compatibility; changing it would make
@@ -45,11 +45,11 @@ object SecureMessageCodec {
     // payloadLength fields that would overflow Int arithmetic (CWE-190).
     private const val maxMifarePayloadBytes = 4_096 - mifareHeaderLengthBytes
 
-    fun encryptToPayload(plainText: String, password: String): ByteArray {
+    fun encryptToPayload(plainText: String, password: String, iterations: Int = pbkdf2Iterations): ByteArray {
         val messageBytes = plainText.toByteArray(StandardCharsets.UTF_8)
         val salt = ByteArray(saltLengthBytes).also(secureRandom::nextBytes)
         val nonce = ByteArray(nonceLengthBytes).also(secureRandom::nextBytes)
-        val key = deriveKey(password, salt)
+        val key = deriveKey(password, salt, iterations)
 
         return try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -68,13 +68,13 @@ object SecureMessageCodec {
         }
     }
 
-    fun encryptEntropyToPayload(entropy: ByteArray, password: String): ByteArray {
+    fun encryptEntropyToPayload(entropy: ByteArray, password: String, iterations: Int = pbkdf2Iterations): ByteArray {
         require(entropy.size == 16 || entropy.size == 32) {
             "Entropy must be exactly 16 or 32 bytes"
         }
         val salt = ByteArray(saltLengthBytes).also(secureRandom::nextBytes)
         val nonce = ByteArray(nonceLengthBytes).also(secureRandom::nextBytes)
-        val key = deriveKey(password, salt)
+        val key = deriveKey(password, salt, iterations)
 
         return try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -93,10 +93,10 @@ object SecureMessageCodec {
         }
     }
 
-    fun encryptShareToPayload(share: ByteArray, password: String): ByteArray {
+    fun encryptShareToPayload(share: ByteArray, password: String, iterations: Int = pbkdf2Iterations): ByteArray {
         val salt = ByteArray(saltLengthBytes).also(secureRandom::nextBytes)
         val nonce = ByteArray(nonceLengthBytes).also(secureRandom::nextBytes)
-        val key = deriveKey(password, salt)
+        val key = deriveKey(password, salt, iterations)
 
         return try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -119,20 +119,21 @@ object SecureMessageCodec {
         mainPlainText: String,
         mainPassword: String,
         duressPlainText: String,
-        duressPassword: String
+        duressPassword: String,
+        iterations: Int = pbkdf2Iterations
     ): ByteArray {
         val payload1 = if (isMnemonic(mainPlainText)) {
             val entropy = Bip39Compressor.mnemonicToEntropy(Bip39Compressor.cleanAndSplitMnemonic(mainPlainText))
-            encryptEntropyToPayload(entropy, mainPassword)
+            encryptEntropyToPayload(entropy, mainPassword, iterations)
         } else {
-            encryptToPayload(mainPlainText, mainPassword)
+            encryptToPayload(mainPlainText, mainPassword, iterations)
         }
 
         val payload2 = if (isMnemonic(duressPlainText)) {
             val entropy = Bip39Compressor.mnemonicToEntropy(Bip39Compressor.cleanAndSplitMnemonic(duressPlainText))
-            encryptEntropyToPayload(entropy, duressPassword)
+            encryptEntropyToPayload(entropy, duressPassword, iterations)
         } else {
-            encryptToPayload(duressPlainText, duressPassword)
+            encryptToPayload(duressPlainText, duressPassword, iterations)
         }
 
         return ByteBuffer.allocate(1 + 2 + payload1.size + 2 + payload2.size)
@@ -171,15 +172,26 @@ object SecureMessageCodec {
             throw InvalidPayloadException("The NFC payload is truncated.")
         }
 
-        val key = deriveKey(password, salt)
-
-        return try {
+        // Try standard (2,000,000) iterations first
+        try {
+            val key = deriveKey(password, salt, 2_000_000)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
             cipher.updateAAD(associatedData)
-            cipher.doFinal(ciphertext)
+            return cipher.doFinal(ciphertext)
         } catch (error: AEADBadTagException) {
-            throw InvalidPasswordException(error)
+            // Try legacy (600,000) iterations
+            try {
+                val key = deriveKey(password, salt, 600_000)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
+                cipher.updateAAD(associatedData)
+                return cipher.doFinal(ciphertext)
+            } catch (innerError: AEADBadTagException) {
+                throw InvalidPasswordException(innerError)
+            } catch (innerError: GeneralSecurityException) {
+                throw IllegalStateException("Unable to decrypt the SSS share.", innerError)
+            }
         } catch (error: GeneralSecurityException) {
             throw IllegalStateException("Unable to decrypt the SSS share.", error)
         }
@@ -236,21 +248,38 @@ object SecureMessageCodec {
             throw InvalidPayloadException("The NFC payload is truncated.")
         }
 
-        val key = deriveKey(password, salt)
-
-        return try {
+        // Try standard (2,000,000) iterations first
+        try {
+            val key = deriveKey(password, salt, 2_000_000)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
             cipher.updateAAD(associatedData)
             val decryptedBytes = cipher.doFinal(ciphertext)
-            if (version == formatVersionEntropy) {
+            return if (version == formatVersionEntropy) {
                 val words = Bip39Compressor.entropyToMnemonic(decryptedBytes)
                 words.joinToString(" ")
             } else {
                 String(decryptedBytes, StandardCharsets.UTF_8)
             }
         } catch (error: AEADBadTagException) {
-            throw InvalidPasswordException(error)
+            // Try legacy (600,000) iterations
+            try {
+                val key = deriveKey(password, salt, 600_000)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(gcmTagLengthBits, nonce))
+                cipher.updateAAD(associatedData)
+                val decryptedBytes = cipher.doFinal(ciphertext)
+                return if (version == formatVersionEntropy) {
+                    val words = Bip39Compressor.entropyToMnemonic(decryptedBytes)
+                    words.joinToString(" ")
+                } else {
+                    String(decryptedBytes, StandardCharsets.UTF_8)
+                }
+            } catch (innerError: AEADBadTagException) {
+                throw InvalidPasswordException(innerError)
+            } catch (innerError: GeneralSecurityException) {
+                throw IllegalStateException("Unable to decrypt the NFC message.", innerError)
+            }
         } catch (error: GeneralSecurityException) {
             throw IllegalStateException("Unable to decrypt the NFC message.", error)
         }
@@ -368,10 +397,10 @@ object SecureMessageCodec {
         return 1 + 1 + payloadLengthFieldSize + mimeTypeBytes.size + payloadSize
     }
 
-    private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
+    private fun deriveKey(password: String, salt: ByteArray, iterations: Int = pbkdf2Iterations): SecretKeySpec {
         // NIST SP 800-57 §8.1: zeroize key material as soon as it is no longer needed.
         // PBEKeySpec holds an internal char[] copy of the password that can be explicitly zeroed.
-        val keySpec = PBEKeySpec(password.toCharArray(), salt, pbkdf2Iterations, keyLengthBits)
+        val keySpec = PBEKeySpec(password.toCharArray(), salt, iterations, keyLengthBits)
         return try {
             val secretFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
             SecretKeySpec(secretFactory.generateSecret(keySpec).encoded, "AES")

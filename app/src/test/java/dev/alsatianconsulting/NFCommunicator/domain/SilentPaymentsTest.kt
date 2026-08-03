@@ -104,4 +104,26 @@ class SilentPaymentsTest {
         assertTrue(signedTxHex.isNotEmpty())
         assertTrue(signedTxHex.length >= 400)
     }
+
+    @Test
+    fun testDeriveSilentPaymentAddressFromMnemonic() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = MnemonicCode.toSeed(mnemonic, "")
+        val master = DeterministicWallet.generate(seed)
+
+        val scanDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/1'/0")
+        val spendDerived = DeterministicWallet.derivePrivateKey(master, "m/352'/0'/0'/0'/0")
+
+        val scanPubKey = scanDerived.publicKey.value.toByteArray()
+        val spendPubKey = spendDerived.publicKey.value.toByteArray()
+
+        val address = WalletEngine.encodeSilentPaymentAddress("sp", scanPubKey, spendPubKey)
+
+        assertTrue(address.startsWith("sp1q"))
+        assertEquals(116, address.length) // BIP-352 mainnet address is exactly 116 characters
+
+        val (decodedScan, decodedSpend) = WalletEngine.decodeSilentPaymentAddress(address)
+        assertArrayEquals(scanPubKey, decodedScan)
+        assertArrayEquals(spendPubKey, decodedSpend)
+    }
 }

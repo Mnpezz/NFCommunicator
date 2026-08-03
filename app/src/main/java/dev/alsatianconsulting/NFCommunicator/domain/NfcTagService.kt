@@ -122,17 +122,18 @@ class NfcTagService {
         message: String,
         isDuress: Boolean = false,
         emergencyPassword: String = "",
-        emergencyMessage: String = ""
+        emergencyMessage: String = "",
+        iterations: Int = 600_000
     ): NfcOperationResult {
         val encryptedPayload = if (isDuress) {
-            SecureMessageCodec.encryptDuressToPayload(message, password, emergencyMessage, emergencyPassword)
+            SecureMessageCodec.encryptDuressToPayload(message, password, emergencyMessage, emergencyPassword, iterations)
         } else {
             val words = Bip39Compressor.cleanAndSplitMnemonic(message)
             if ((words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess) {
                 val entropy = Bip39Compressor.mnemonicToEntropy(words)
-                SecureMessageCodec.encryptEntropyToPayload(entropy, password)
+                SecureMessageCodec.encryptEntropyToPayload(entropy, password, iterations)
             } else {
-                SecureMessageCodec.encryptToPayload(message, password)
+                SecureMessageCodec.encryptToPayload(message, password, iterations)
             }
         }
         if (MifareClassic.get(tag) != null) {
