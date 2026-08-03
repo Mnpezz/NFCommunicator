@@ -69,7 +69,7 @@
 
 | Write & Backup | Nostr Signer Prompt | Coin Control |
 | :---: | :---: | :---: |
-| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/coin_control.png)](docs/screenshots/coin_control.png) |
+| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/coin_control.png)](docs/screenshots/ecash.png) |
 
 ---
 
