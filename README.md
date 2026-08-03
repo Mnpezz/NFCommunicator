@@ -1,76 +1,123 @@
 # NFCommunicator
 
-A secure, offline NFC messaging and cryptographic key storage tool. Encrypt, write, read, and erase messages directly on physical NFC tags (NDEF or raw MIFARE Classic) without cloud dependencies. Configured as a privacy-focused Bitcoin wallet with automated HD address rotation, SegWit/Taproot/Silent Payments support, Shamir's Secret Sharing (SSS) split-key backups, Nostr identity derivation (NIP-06), and Cashu eCash integration (NIP-60/61).
+**NFCommunicator is an offline cryptographic identity wallet.** It uses inexpensive, physical NFC cards as encrypted portable storage for Bitcoin wallet seeds, Nostr identities, Cashu credentials, and secure messages. 
+
+---
+
+## Why NFCommunicator?
+
+*   **Offline Secrets Storage**: Unlike hardware wallets that require USB/Bluetooth or password managers relying on cloud sync, NFCommunicator stores your secrets on physical, offline NFC cards.
+*   **Why NFC over a Hardware Wallet?**: NFC cards cost only a few dollars, require no batteries, are easy to duplicate for backup purposes, and can be securely stored in multiple physical locations.
+*   **Zero Local Footprint**: Your seed phrase never permanently resides on your phone's storage. It is only decrypted in memory when you tap your card and enter your password, then wiped immediately upon closing.
+*   **Duress Protection**: Configure a secondary emergency password that reveals an alternate encrypted payload (like a dummy seed or custom message) instead of your real wallet keys.
+*   **Fault-Tolerant Backups**: Distribute your keys across multiple cards using Shamir's Secret Sharing (SSS) to create robust `k-of-n` backups (e.g., needing any 2 out of 3 tags to reconstruct your wallet).
+*   **Privacy by Default**: Modern SegWit/Taproot address rotation and Silent Payments reduce address reuse and improve receiver privacy.
+
+---
+
+## Comparison Matrix
+
+| Feature | NFCommunicator | Typical Hardware Wallet | Standard Software Wallet |
+| :--- | :---: | :---: | :---: |
+| **Offline Secret Storage** | NFC Card | Secure Element | Device Storage |
+| **Offline Transaction Signing** | ✅ | ✅ | Some |
+| **Nostr Signer (NIP-55)** | ✅ | Rare | Some |
+| **Cashu** | ✅ | Rare | Some |
+| **Silent Payments** | ✅ | Rare | Rare |
+| **Shamir Backup** | ✅ | Some | Rare |
+
+---
+
+## Architecture & Key Derivation
+
+```
+            Encrypted NFC Card
+                   │
+       Password + PBKDF2 (2,000,000)
+                   │
+           AES-256-GCM Decryption
+                   │
+              BIP-39 Mnemonic
+                   │
+       ┌───────────┼───────────┐
+       │           │           │
+  Bitcoin      Nostr       Cashu
+  BIP-84       NIP-06      NIP-60
+  Taproot      NIP-55
+  Silent Pay
+```
+
+---
+
+## Screenshots
+
+| Wallet Dashboard | NFC Scan Dialog | Read & Decrypt |
+| :---: | :---: | :---: |
+| ![Wallet](docs/screenshots/wallet.png) | ![Scan Dialog](docs/screenshots/scan_dialog.png) | ![Read Screen](docs/screenshots/read.png) |
+
+| Write & Backup | Nostr Signer Prompt | Cashu Wallet |
+| :---: | :---: | :---: |
+| ![Write Screen](docs/screenshots/write.png) | ![Nostr Signer](docs/screenshots/nostr_signer.png) | ![Cashu Wallet](docs/screenshots/ecash.png) |
+
+---
 
 ## Key Features
 
-- **Wallet Backup & Imports**:
-  - Support for BIP-39 mnemonic seed phrases (12/24 words) with automatic input normalization.
-  - Support for raw private keys, including WIF (Wallet Import Format), raw hexadecimal, and BIP-32/BIP-44 Extended Private Keys (`xprv`/`zprv` etc.).
-  - Split backups using Shamir's Secret Sharing (SSS) to split seed phrases across multiple physical NFC tags with adjustable thresholds (e.g. 2-of-3 tags).
-- **On-Chain Bitcoin Wallet**:
-  - Derives Legacy, Nested SegWit, Native SegWit, and Taproot addresses from mnemonics or imported private keys.
-  - **Default Wallet Address**: Prioritizes **Native SegWit (BIP-84)** and **Taproot (BIP-86)** at the top of the wallet screen and address selectors (moving Legacy to the bottom) for modern transactions.
-  - **Silent Payments (BIP-352) Generation**: Automatically derives Scan (`m/352'/0'/0'/1'/0`) and Spend (`m/352'/0'/0'/0'/0`) private keys from BIP-39 mnemonics and encodes them into a standard Bech32m-formatted Silent Payment address (`sp1...`).
-  - **Silent Payments (BIP-352) Sending**: Fully supports building, signing, and sending coin-controlled inputs to external Silent Payment addresses.
-  - **HD Address Rotation**: Automatically derives a 10-address index window (0 to 9) to scan balances and UTXOs in parallel, presenting a fresh receiving address to prevent address reuse.
-  - **Coin Control**: Displays UTXOs with detailed derivation index (e.g., `Index #1`) and address information, giving users complete control over which inputs to spend.
-  - **Multi-Index Signing**: Securely constructs and signs multi-input transactions using the corresponding derived private keys across the address window.
-  - Camera-based QR code scanner for scanning recipient addresses.
-  - Offline transaction signing using keys decrypted from NFC tags and broadcasting.
-- **Nostr & eCash (Cashu)**:
-  - Identity keypair derivation (NIP-06) for Nostr (`nsec` and `npub`).
-  - Cashu (eCash) minting, melting (Lightning invoice payments), sending, and receiving (NIP-60/NIP-61) with searchable active mint discovery.
-  - **NIP-55 Nostr Signer Integration**: External Nostr clients (such as Amethyst, Wisp, etc.) can securely request public keys, event signing, and payload encryption/decryption (both NIP-04 and NIP-44).
-  - **Auto-Approval Rules**: Configurable settings allow automatic approval for specific Nostr event kinds (kind 5, 22242, 10050, 31234) and NIP-04/NIP-44 actions.
-  - **Caller Verification Allowlist (Security)**: The `SignerProvider` intercepts and validates the calling package name. Background requests from unapproved apps return `null` (forcing standard clients to fallback to standard Intent-based prompts), and authorized caller packages are stored in a persistent allowlist upon user confirmation.
-  - **Protocol Robustness & Loop Protection**: Decrypts hex, standard Base64, and URL-safe Base64 IVs/payloads. Uncaught background exceptions are caught and returned as clean error cursors (preventing client NullPointerExceptions), while foreground exceptions display a manual dismiss dialog (preventing Android's rapid-launch loop).
-  - **Switch Account UX**: Provides a context-aware "Switch Account (Re-scan Tag)" button during signer requests to allow users to switch active cards/identities without leaving the signing flow.
+### 🔒 NFC Storage & Security
+*   **Hardened Key Derivation**: Uses AES-256-GCM with a high work factor of **2,000,000 PBKDF2-HMAC-SHA256 iterations** to resist offline GPU brute-force cracking. Fallback trial decryption at **600,000 iterations** preserves compatibility with older written tags.
+*   **Volatile Memory Purging**: Plaintext password buffers are wiped from state on tab changes, scan cancellations, or wallet closure. All decrypted credentials (seeds, Nostr keys, etc.) are nulled when locking the wallet.
+*   **"Forget Card" Option**: Instantly purges the cached encrypted NDEF payload from volatile memory to reset the screen to a fresh scan state without restarting the app.
+*   **Shamir's Secret Sharing (SSS)**: Securely split your BIP-39 mnemonic seed phrase across multiple physical tags with configurable thresholds (e.g. 3 SSS shares with a 2-share threshold).
+*   **Duress / Emergency Payload**: Write an alternative emergency message (e.g., dummy seed or custom notice) mapped to a secondary emergency password. Entering the emergency password decrypts the dummy payload instead of your real wallet.
 
-## Product decisions in this scaffold
+### 🧡 On-Chain Bitcoin Wallet
+*   **Modern Defaults**: Prioritizes **Native SegWit (BIP-84)** and **Taproot (BIP-86)** address formats at the top of the interface.
+*   **Silent Payments (BIP-352)**: Automatically derives Silent Payment Scan (`m/352'/0'/0'/1'/0`) and Spend (`m/352'/0'/0'/0'/0`) private keys from mnemonics to display your `sp1...` address. Hides balance/UTXO panels and provides a warning banner advising the use of a dedicated scanner (like Cake Wallet or Sparrow Wallet) to scan/spend incoming stealth funds.
+*   **Silent Payments Sending**: Full support for spending coin-controlled inputs to pay external BIP-352 stealth addresses.
+*   **HD Address Rotation**: Automatically scans a 10-address index window (0 to 9) to fetch balances and UTXOs in parallel, presenting a fresh receiving address to prevent address reuse.
+*   **Granular Coin Control**: Inspect your UTXOs with detailed derivation indices and select exactly which inputs to sign.
+*   **Camera-based QR Scanner**: Easily scan recipient addresses and transaction details.
 
-- One encrypted message per card.
-- Offline only. No accounts, sync, or stored passwords.
-- **Password Hardening & Key Derivation**: Standardized on AES-256-GCM with PBKDF2-HMAC-SHA256 using a default work factor of **2,000,000 iterations** for hardened offline brute-force cracking resistance. Falls back to **600,000 iterations** for backward compatibility with older written tags.
-- **Zeroing & Memory Purging Policy**:
-  - Automatically wipes plaintext password buffers from volatile state on tab selection changes, scan cancellation, and wallet closure.
-  - Nulls the decrypted seed mnemonic, private keys, and Nostr credentials from memory when closing the wallet.
-  - Offers a `"Forget Card"` option in the UI to instantly wipe the cached raw encrypted NDEF tag payload from the device's volatile memory.
-- Clear card: overwrite NDEF tags with an empty NDEF message or zero the app's raw MIFARE Classic storage region.
-- Broad compatibility target: any NFC tag Android can access through standard NDEF APIs, plus raw MIFARE Classic when the handset exposes that tech.
+### 💜 Nostr Signer (NIP-55)
+*   **Seamless Integration**: Operates as a background service allowing external Nostr clients (Amethyst, Wisp, etc.) to request public keys, sign events, or perform NIP-04/NIP-44 encryption/decryption.
+*   **Package Allowlisting**: Validates the calling package name. Prevents automated calls from unapproved apps and stores authorized package credentials in a persistent allowlist.
+*   **Auto-Approval Rules**: Set customizable event permissions to automatically sign specific event types (e.g. kind 5, 22242, 10050, 31234) and NIP-04/NIP-44 actions.
+*   **Switch Account UX**: Change active profiles or scan a new NFC tag directly from the signer request prompt.
 
-## Tag support
+### 🪙 eCash (Cashu NIP-60/61)
+*   **Mint Management**: Mint, melt (pay Lightning invoices), send, and receive Cashu tokens directly.
+*   **Mint Discovery**: In-app search of active public Cashu mints to easily swap and select mint endpoints.
 
-This implementation now prefers raw `MifareClassic` whenever the scanned tag exposes that tech on the device. Tags without `MifareClassic` support still use standard NDEF, and non-NDEF tags can still be NDEF-formatted when Android exposes `NdefFormatable`.
+---
 
-Raw MIFARE Classic support intentionally skips sector 0 and all sector trailer blocks. That avoids manufacturer data and ACL blocks while still giving the app a contiguous storage region for one encrypted message.
+## Tag Support
 
-- **NDEF Discovery in Reader Mode**: NFC Reader Mode flags are configured to allow Android to perform standard NDEF/NDEF-formatable tag discovery (allowing compatibility with tags like MIFARE Ultralight that lack raw MIFARE Classic exposure on certain handsets).
+This app utilizes standard NDEF APIs for maximum compatibility (e.g., NTAG series, MIFARE Ultralight, etc.), but prefers raw `MifareClassic` direct storage on handsets and tags that support it.
+*   **Raw MIFARE Classic**: contiguously stores the encrypted message, skipping manufacturer sector 0 and sector trailer ACL blocks.
+*   **NDEF Reader Mode Flags**: Configured to capture NDEF-formatable tags automatically for seamless initial formatting.
 
+---
 
-## Build
+## UX Flow
 
-1. Ensure `ANDROID_HOME` points to your SDK, for example `/home/user/Android/Sdk`.
-2. For signed release builds, keep signing material outside the repo. Copy [keystore.properties.example](keystore.properties.example) to `~/.config/nfccommunicator/keystore.properties` and place the keystore next to it, or set `NFC_COMMUNICATOR_SIGNING_PROPERTIES` to another local-only path.
-3. Run `./gradlew assembleDebug` for debug or `./gradlew assembleRelease` for a signed release when the external signing config is present.
+### 1. Locked State & Read Screen
+*   **Passive Scan**: Hold any compatible tag to the back of the phone. The app immediately reads and caches the raw encrypted payload in memory.
+*   **Decrypt**: Enter the password and tap **Try Password**. A full-screen dialog overlay with a radar pulse animation appears during key derivation, unlocking the wallet.
+*   **Forget**: If a card is cached but you wish to clear it from memory, tap the red **Forget Card** button next to the password input.
 
-## UX flow
+### 2. Wallet Dashboard (Unlocked State)
+*   Provides On-chain, Nostr, and eCash tabs. 
+*   Displays modern SegWit/Taproot receiving addresses, total balance, coin control UTXOs, and the transaction sending form.
+*   *Note:* Hides the Coin Control panel for Nostr Taproot, and hides both On-chain Balance and Coin Control panels for Silent Payments (replaced with the setup warning card).
 
-- **Read**: hold the tag to the phone on the read screen. If the tag contains this app's encrypted message, the app caches it immediately; if a password is already entered it is tried automatically, and if not you can enter the password afterward to decrypt the cached message.
-- **Write**: enter password twice, type a plain-text message, review the estimated encrypted size for both NDEF and raw MIFARE Classic storage, tap `Write to Card`, and scan the tag.
-- **Clear Card**: available from both tabs and clears the active storage backend for the scanned tag.
-- Pending scans lock the active form fields and tabs so the captured password/message cannot drift before the tag is processed.
-- **Full-Screen Scan Dialog**: Scanning displays a persistent full-screen dialog overlay featuring a dynamic canvas radar pulse wave animation. The overlay remains visible on the screen during the entire background card-interaction phase (encrypting, writing, signing, clearing) and expensive cached decryption PBKDF2 derivations ("Decrypting Cached Wallet") to prevent premature UI dismissals.
-- **Address-Specific Dashboards**:
-  - Hides the **Coin Control** card for `Nostr Taproot` since general coin-controlled UTXO spending is not performed from this address.
-  - Hides **both** the **Balance** card and the **Coin Control** card when `Silent Payment (BIP-352)` is active, replacing them with a warning card advising the user to import their BIP-39 mnemonic seed into a dedicated BIP-352 scanner (like Cake Wallet or Sparrow Wallet).
-- The app gives immediate haptic feedback on tag detection plus a success/error toast and vibration when the NFC operation completes.
-- Password fields are cleared after each completed read, write, or clear operation, and the read screen lets you select or copy the decrypted message.
-- When the last scanned tag exposes an exact capacity, the write screen shows the maximum unencrypted character count that fits on that backend and keeps a live character count for the message draft.
-- Raw `MIFARE Classic` tag summaries now show both the app-usable storage estimate and the card's full reported geometry, such as `MIFARE Classic 1K`, sector count, and total bytes.
-- The selected tab, write draft, and last scanned tag summary survive activity recreation, but passwords and decrypted message text remain memory-only and are not restored from saved state.
-- Failure states now include a secondary diagnostic explanation when the app can narrow the cause to handset support limits, common-key authentication failure, payload incompatibility, or a lost tag during I/O.
-- If a card is readable but does not contain one of this app's encrypted messages, the read flow now says that directly instead of falling back to a generic incompatibility message.
-- The UI uses a dark-only Material 3 theme built from `#E87722` and darker/lighter orange-derived shades.
-- Reader mode stays active while the app is in the foreground, so tags now produce passive detection feedback and update the last scanned tag summary even before `Read`, `Write`, or `Clear` is armed.
-- On the `Read` tab specifically, passive detection now reads and caches compatible encrypted payloads automatically instead of waiting for a manual scan-arm action.
+### 3. Write Screen
+*   Select your backup type (Single NFC or SSS Split), enter your desired password, write your mnemonic draft, and click **Write to Card**. 
+*   Hold your tag against the phone; a persistent full-screen animation overlay tracks the writing process, closing automatically upon success.
+
+---
+
+## Build Instructions
+
+1.  Ensure `ANDROID_HOME` points to your Android SDK.
+2.  Copy [keystore.properties.example](keystore.properties.example) to `~/.config/nfccommunicator/keystore.properties` and configure your key paths for signed builds.
+3.  Run `./gradlew assembleDebug` for testing, or `./gradlew test` to execute the full unit and integration test suite.
