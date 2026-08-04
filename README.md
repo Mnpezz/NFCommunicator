@@ -81,9 +81,9 @@ Silent Pay
 | :---: | :---: | :---: |
 | [![Wallet](docs/screenshots/wallet.png)](docs/screenshots/wallet.png) | [![Scan Dialog](docs/screenshots/scan_dialog.png)](docs/screenshots/scan_dialog.png) | [![Read Screen](docs/screenshots/read.png)](docs/screenshots/read.png) |
 
-| Write & Backup | Nostr Signer Prompt | Coin Control |
-| :---: | :---: | :---: |
-| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/coin_control.png)](docs/screenshots/coin_control.png) |
+| Write & Backup | Nostr Signer Prompt | Coin Control | Browser |
+| :---: | :---: | :---: | :---: |
+| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/ecash.png)](docs/screenshots/ecash.png) | [![Browser](docs/screenshots/browser.png)](docs/screenshots/browser.png) |
 
 ---
 
