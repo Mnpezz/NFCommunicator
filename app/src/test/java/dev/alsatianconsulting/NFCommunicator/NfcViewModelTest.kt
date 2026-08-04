@@ -37,76 +37,91 @@ class NfcViewModelTest {
 
     @After
     fun tearDown() {
+        testDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private fun viewModel(): NfcViewModel =
-        NfcViewModel(SavedStateHandle()).also { vm ->
+        NfcViewModel(SavedStateHandle(), testDispatcher).also { vm ->
             vm.setNfcState(isAvailable = true, isEnabled = true)
         }
 
-    // ── beginWriteScan validation ─────────────────────────────────────────────
+    // ── Wizard Write validation ─────────────────────────────────────────────
 
     @Test
-    fun beginWriteScan_blankPassword_setsWriteStatusError() {
+    fun startWriteWizard_blankMessage_setsWriteStatusError() {
         val vm = viewModel()
-        vm.updateWriteMessage("hello")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
+        assertFalse(vm.uiState.value.writeWizardActive)
     }
 
     @Test
-    fun beginWriteScan_shortPassword_setsWriteStatusError() {
+    fun startWriteWizard_validMessage_activatesWizard() {
         val vm = viewModel()
-        val shortPassword = "x".repeat(MIN_PASSWORD_LENGTH - 1)
-        vm.updateWritePassword(shortPassword)
-        vm.updateWritePasswordConfirmation(shortPassword)
-        vm.updateWriteMessage("hello")
-        vm.beginWriteScan()
-
-        assertTrue(vm.uiState.value.writeStatus.isError)
-        assertTrue(
-            vm.uiState.value.writeStatus.text.contains(MIN_PASSWORD_LENGTH.toString()),
-        )
-        assertNull(vm.uiState.value.pendingScanAction)
-    }
-
-    @Test
-    fun beginWriteScan_mismatchedPasswords_setsWriteStatusError() {
-        val vm = viewModel()
-        vm.updateWritePassword("password-one-long")
-        vm.updateWritePasswordConfirmation("password-two-long")
-        vm.updateWriteMessage("hello")
-        vm.beginWriteScan()
-
-        assertTrue(vm.uiState.value.writeStatus.isError)
-        assertNull(vm.uiState.value.pendingScanAction)
-    }
-
-    @Test
-    fun beginWriteScan_blankMessage_setsWriteStatusError() {
-        val vm = viewModel()
-        val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
-        vm.beginWriteScan()
-
-        assertTrue(vm.uiState.value.writeStatus.isError)
-        assertNull(vm.uiState.value.pendingScanAction)
-    }
-
-    @Test
-    fun beginWriteScan_validInputs_setsPendingWriteAction() {
-        val vm = viewModel()
-        val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello world")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+
+        assertFalse(vm.uiState.value.writeStatus.isError)
+        assertTrue(vm.uiState.value.writeWizardActive)
+        assertEquals(1, vm.uiState.value.writeWizardRawShares.size)
+        assertEquals(0, vm.uiState.value.writeWizardIndex)
+    }
+
+    @Test
+    fun proceedWithWizardWrite_blankPassword_setsWriteStatusError() {
+        val vm = viewModel()
+        vm.updateWriteMessage("hello")
+        vm.startWriteWizard()
+        vm.proceedWithWizardWrite()
+
+        assertTrue(vm.uiState.value.writeStatus.isError)
+        assertNull(vm.uiState.value.pendingScanAction)
+    }
+
+    @Test
+    fun proceedWithWizardWrite_shortPassword_setsWriteStatusError() {
+        val vm = viewModel()
+        vm.updateWriteMessage("hello")
+        vm.startWriteWizard()
+        val shortPassword = "x".repeat(MIN_PASSWORD_LENGTH - 1)
+        vm.updateWriteWizardPassword(shortPassword)
+        vm.updateWriteWizardPasswordConfirmation(shortPassword)
+        vm.proceedWithWizardWrite()
+
+        assertTrue(vm.uiState.value.writeStatus.isError)
+        assertTrue(vm.uiState.value.writeStatus.text.contains(MIN_PASSWORD_LENGTH.toString()))
+        assertNull(vm.uiState.value.pendingScanAction)
+    }
+
+    @Test
+    fun proceedWithWizardWrite_mismatchedPasswords_setsWriteStatusError() {
+        val vm = viewModel()
+        vm.updateWriteMessage("hello")
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword("password-one-long")
+        vm.updateWriteWizardPasswordConfirmation("password-two-long")
+        vm.proceedWithWizardWrite()
+
+        assertTrue(vm.uiState.value.writeStatus.isError)
+        assertNull(vm.uiState.value.pendingScanAction)
+    }
+
+    @Test
+    fun proceedWithWizardWrite_validInputs_setsPendingWriteAction() {
+        val vm = viewModel()
+        val pw = "validpassword"
+        vm.updateWriteMessage("hello world")
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.proceedWithWizardWrite()
+
+        testDispatcher.scheduler.advanceUntilIdle()
 
         assertFalse(vm.uiState.value.writeStatus.isError)
         assertTrue(vm.uiState.value.pendingScanAction is PendingScanAction.Write)
@@ -226,22 +241,54 @@ class NfcViewModelTest {
     }
 
     @Test
-    fun beginWriteScan_withMultiNfcSplit_setsPendingWriteShareAction() {
+    fun startWriteWizard_withMultiNfcSplit_setsWizardShares() {
         val vm = viewModel()
-        val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
         vm.updateWriteIsMultiNfcSplit(true)
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+
+        assertFalse(vm.uiState.value.writeStatus.isError)
+        assertTrue(vm.uiState.value.writeWizardActive)
+        assertEquals(3, vm.uiState.value.writeWizardRawShares.size)
+        assertEquals(0, vm.uiState.value.writeWizardIndex)
+        assertEquals(2, vm.uiState.value.writeWizardK)
+    }
+
+    @Test
+    fun proceedWithWizardWrite_withMultiNfcSplitAndDuress_precomputesCorrectPayload() {
+        val vm = viewModel()
+        vm.updateWriteMessage("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+        vm.updateWriteIsMultiNfcSplit(true)
+        vm.updateWriteIsDuressEnabled(true)
+        vm.startWriteWizard()
+
+        val pw = "validpassword"
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryMnemonic("emergency seed")
+        vm.updateWriteWizardSecondaryPassword("emergency-pw")
+        vm.updateWriteWizardSecondaryPasswordConfirmation("emergency-pw")
+        vm.proceedWithWizardWrite()
+
+        testDispatcher.scheduler.advanceUntilIdle()
 
         assertFalse(vm.uiState.value.writeStatus.isError)
         val action = vm.uiState.value.pendingScanAction
-        assertTrue(action is PendingScanAction.WriteShare)
-        val writeShare = action as PendingScanAction.WriteShare
-        assertEquals(3, writeShare.shares.size)
-        assertEquals(0, writeShare.currentIndex)
-        assertEquals(2, writeShare.thresholdK)
+        assertTrue(action is PendingScanAction.Write)
+        val writeAction = action as PendingScanAction.Write
+        val payload = writeAction.encryptedPayload
+
+        // Verify that the secondary wallet password decrypts to the secondary wallet mnemonic
+        val decryptedEmergency = dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec.decryptPayload(
+            payload, "emergency-pw"
+        )
+        assertEquals("emergency seed", decryptedEmergency)
+
+        // Verify that the vault password extracts the SSS share bytes correctly
+        val decryptedShare = dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec.decryptSharePayload(
+            payload, pw
+        )
+        assertTrue(decryptedShare.isNotEmpty())
     }
 
     @Test
@@ -348,108 +395,124 @@ class NfcViewModelTest {
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_blankEmergencyPassword_setsWriteStatusError() {
+    fun proceedWithWizardWrite_duressEnabled_blankEmergencyPassword_setsWriteStatusError() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello")
         vm.updateWriteIsDuressEnabled(true)
-        vm.updateWriteEmergencyMessage("emergency-hello")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryMnemonic("emergency-hello")
+        vm.proceedWithWizardWrite()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_shortEmergencyPassword_setsWriteStatusError() {
+    fun proceedWithWizardWrite_duressEnabled_shortEmergencyPassword_setsWriteStatusError() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello")
         vm.updateWriteIsDuressEnabled(true)
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
         val shortEmergencyPassword = "x".repeat(MIN_PASSWORD_LENGTH - 1)
-        vm.updateWriteEmergencyPassword(shortEmergencyPassword)
-        vm.updateWriteEmergencyPasswordConfirmation(shortEmergencyPassword)
-        vm.updateWriteEmergencyMessage("emergency-hello")
-        vm.beginWriteScan()
+        vm.updateWriteWizardSecondaryPassword(shortEmergencyPassword)
+        vm.updateWriteWizardSecondaryPasswordConfirmation(shortEmergencyPassword)
+        vm.updateWriteWizardSecondaryMnemonic("emergency-hello")
+        vm.proceedWithWizardWrite()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_mismatchedEmergencyPasswords_setsWriteStatusError() {
+    fun proceedWithWizardWrite_duressEnabled_mismatchedEmergencyPasswords_setsWriteStatusError() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello")
         vm.updateWriteIsDuressEnabled(true)
-        vm.updateWriteEmergencyPassword("emergency1")
-        vm.updateWriteEmergencyPasswordConfirmation("emergency2")
-        vm.updateWriteEmergencyMessage("emergency-hello")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryPassword("emergency1")
+        vm.updateWriteWizardSecondaryPasswordConfirmation("emergency2")
+        vm.updateWriteWizardSecondaryMnemonic("emergency-hello")
+        vm.proceedWithWizardWrite()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_sameMainAndEmergencyPassword_setsWriteStatusError() {
+    fun proceedWithWizardWrite_duressEnabled_sameMainAndEmergencyPassword_setsWriteStatusError() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello")
         vm.updateWriteIsDuressEnabled(true)
-        vm.updateWriteEmergencyPassword(pw)
-        vm.updateWriteEmergencyPasswordConfirmation(pw)
-        vm.updateWriteEmergencyMessage("emergency-hello")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryPassword(pw)
+        vm.updateWriteWizardSecondaryPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryMnemonic("emergency-hello")
+        vm.proceedWithWizardWrite()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_blankEmergencyMessage_setsWriteStatusError() {
+    fun proceedWithWizardWrite_duressEnabled_blankEmergencyMessage_setsWriteStatusError() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello")
         vm.updateWriteIsDuressEnabled(true)
-        vm.updateWriteEmergencyPassword("emergency-pw")
-        vm.updateWriteEmergencyPasswordConfirmation("emergency-pw")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryPassword("emergency-pw")
+        vm.updateWriteWizardSecondaryPasswordConfirmation("emergency-pw")
+        vm.proceedWithWizardWrite()
 
         assertTrue(vm.uiState.value.writeStatus.isError)
         assertNull(vm.uiState.value.pendingScanAction)
     }
 
     @Test
-    fun beginWriteScan_duressEnabled_validInputs_setsPendingWriteActionWithDuress() {
+    fun proceedWithWizardWrite_duressEnabled_validInputs_setsPendingWriteActionWithDuress() {
         val vm = viewModel()
         val pw = "validpassword"
-        vm.updateWritePassword(pw)
-        vm.updateWritePasswordConfirmation(pw)
         vm.updateWriteMessage("hello world")
         vm.updateWriteIsDuressEnabled(true)
-        vm.updateWriteEmergencyPassword("emergency-pw")
-        vm.updateWriteEmergencyPasswordConfirmation("emergency-pw")
-        vm.updateWriteEmergencyMessage("emergency seed")
-        vm.beginWriteScan()
+        vm.startWriteWizard()
+        vm.updateWriteWizardPassword(pw)
+        vm.updateWriteWizardPasswordConfirmation(pw)
+        vm.updateWriteWizardSecondaryPassword("emergency-pw")
+        vm.updateWriteWizardSecondaryPasswordConfirmation("emergency-pw")
+        vm.updateWriteWizardSecondaryMnemonic("emergency seed")
+        vm.proceedWithWizardWrite()
+
+        testDispatcher.scheduler.advanceUntilIdle()
 
         assertFalse(vm.uiState.value.writeStatus.isError)
         val action = vm.uiState.value.pendingScanAction
         assertTrue(action is PendingScanAction.Write)
         val writeAction = action as PendingScanAction.Write
-        assertTrue(writeAction.isDuress)
-        assertEquals("emergency-pw", writeAction.emergencyPassword)
-        assertEquals("emergency seed", writeAction.emergencyMessage)
+
+        // Verify decryption of pre-encrypted payload
+        val decryptedMain = dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec.decryptPayload(
+            writeAction.encryptedPayload, pw
+        )
+        assertEquals("hello world", decryptedMain)
+
+        val decryptedEmergency = dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec.decryptPayload(
+            writeAction.encryptedPayload, "emergency-pw"
+        )
+        assertEquals("emergency seed", decryptedEmergency)
     }
 
     // ── Nostr Signer tests ────────────────────────────────────────────────────
@@ -578,5 +641,88 @@ class NfcViewModelTest {
         // Request shouldn't be cleared, and showSwitchAccount should be true
         assertEquals(request, vm.uiState.value.nostrSignerRequest)
         assertTrue(vm.uiState.value.showSwitchAccount)
+    }
+
+    @Test
+    fun beginMultiNfcUnlock_initializesReadWizardCorrectly() {
+        val vm = viewModel()
+        vm.beginMultiNfcUnlock()
+
+        assertTrue(vm.uiState.value.readWizardActive)
+        assertEquals(0, vm.uiState.value.readWizardIndex)
+        assertEquals(2, vm.uiState.value.readWizardK)
+        assertTrue(vm.uiState.value.readWizardPayloads.isEmpty())
+        assertTrue(vm.uiState.value.readWizardDecryptedShares.isEmpty())
+        assertEquals("", vm.uiState.value.readWizardPasswordInput)
+        assertTrue(vm.uiState.value.isMultiNfcUnlock)
+        assertTrue(vm.uiState.value.pendingScanAction is PendingScanAction.ReadShare)
+    }
+
+    @Test
+    fun cancelReadWizard_resetsWizardState() {
+        val vm = viewModel()
+        vm.beginMultiNfcUnlock()
+        vm.updateReadWizardPasswordInput("some-password")
+        vm.cancelReadWizard()
+
+        assertFalse(vm.uiState.value.readWizardActive)
+        assertEquals("", vm.uiState.value.readWizardPasswordInput)
+        assertFalse(vm.uiState.value.isMultiNfcUnlock)
+        assertNull(vm.uiState.value.pendingScanAction)
+    }
+
+    @Test
+    fun decryptWizardShare_withShortPassword_setsStatusError() {
+        val vm = viewModel()
+        vm.beginMultiNfcUnlock()
+        vm.updateReadWizardPasswordInput("short")
+        vm.decryptWizardShare()
+
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(vm.uiState.value.readStatus.isError)
+        assertTrue(vm.uiState.value.readStatus.text.contains(MIN_PASSWORD_LENGTH.toString()))
+        assertFalse(vm.uiState.value.readWizardIsProcessing)
+    }
+
+    @Test
+    @Suppress("UNCHECKED_CAST")
+    fun decryptWizardShare_withDuplicateShare_setsStatusError() {
+        val vm = viewModel()
+
+        // Setup SSS
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        vm.updateWriteMessage(mnemonic)
+        vm.updateWriteIsMultiNfcSplit(true)
+        vm.startWriteWizard()
+
+        val rawShares = vm.uiState.value.writeWizardRawShares
+        val payloadCard1 = dev.alsatianconsulting.NFCommunicator.domain.SecureMessageCodec.encryptShareToPayload(rawShares[0], "password-one")
+
+        vm.beginMultiNfcUnlock()
+
+        // Use reflection to update the private _uiState flow
+        val field = NfcViewModel::class.java.getDeclaredField("_uiState")
+        field.isAccessible = true
+        val uiStateFlow = field.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<MainUiState>
+        uiStateFlow.value = uiStateFlow.value.copy(readWizardPayloads = listOf(payloadCard1, payloadCard1), pendingScanAction = null)
+
+        // Decrypt card 1 first time
+        vm.updateReadWizardPasswordInput("password-one")
+        vm.decryptWizardShare()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.readStatus.isError)
+        assertEquals(1, vm.uiState.value.readWizardDecryptedShares.size)
+        assertEquals(1, vm.uiState.value.readWizardIndex)
+
+        // Try decrypting card 1 second time
+        vm.updateReadWizardPasswordInput("password-one")
+        vm.decryptWizardShare()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(vm.uiState.value.readStatus.isError)
+        assertTrue(vm.uiState.value.readStatus.text.contains("already been successfully decrypted"))
+        assertEquals(1, vm.uiState.value.readWizardDecryptedShares.size)
     }
 }

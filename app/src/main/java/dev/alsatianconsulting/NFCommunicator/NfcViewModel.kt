@@ -111,14 +111,7 @@ sealed interface NostrSignerResultEvent {
 sealed interface PendingScanAction {
     data class Read(val password: String) : PendingScanAction
     data class Write(
-        val password: String,
-        val message: String,
-        val isDuress: Boolean = false,
-        val emergencyPassword: String = "",
-        val emergencyMessage: String = "",
-        val iterations: Int = 600000,
-        val currentIndex: Int = 0,
-        val targetCount: Int = 1
+        val encryptedPayload: ByteArray
     ) : PendingScanAction
     data class Clear(val origin: AppScreen) : PendingScanAction
     data class Sign(
@@ -126,12 +119,6 @@ sealed interface PendingScanAction {
         val recipient: String,
         val amount: Long,
         val feeRate: Long
-    ) : PendingScanAction
-    data class WriteShare(
-        val password: String,
-        val shares: List<ByteArray>,
-        val currentIndex: Int,
-        val thresholdK: Int
     ) : PendingScanAction
     data class ReadShare(
         val password: String,
@@ -180,6 +167,29 @@ data class MainUiState(
     val generatedEmergencyMnemonic: String? = null,
     val writePbkdf2Iterations: Int = 2000000,
     val writeBackupsCount: Int = 1,
+
+    // Step-by-Step Writing Wizard State
+    val writeWizardActive: Boolean = false,
+    val writeWizardIndex: Int = 0,
+    val writeWizardRawShares: List<ByteArray> = emptyList(),
+    val writeWizardIsShare: Boolean = false,
+    val writeWizardK: Int = 1,
+    val writeWizardPassword: String = "",
+    val writeWizardPasswordConfirmation: String = "",
+    val writeWizardSecondaryMnemonic: String = "",
+    val writeWizardSecondaryPassword: String = "",
+    val writeWizardSecondaryPasswordConfirmation: String = "",
+    val writeWizardGeneratedSecondaryMnemonic: String? = null,
+    val writeWizardIsProcessing: Boolean = false,
+
+    // Step-by-Step Reading Wizard State
+    val readWizardActive: Boolean = false,
+    val readWizardPayloads: List<ByteArray> = emptyList(),
+    val readWizardDecryptedShares: List<ByteArray> = emptyList(),
+    val readWizardIndex: Int = 0,
+    val readWizardK: Int = 2,
+    val readWizardPasswordInput: String = "",
+    val readWizardIsProcessing: Boolean = false,
     
     // Wallet Engine State
     val walletBalance: Long? = null,
@@ -257,8 +267,13 @@ data class MainUiState(
             pendingScanAction is PendingScanAction.Read ->
                 "Hold a compatible NFC tag against the phone to decrypt its message."
 
-            pendingScanAction is PendingScanAction.Write ->
-                "Hold a compatible NFC tag against the phone to write the encrypted message."
+            pendingScanAction is PendingScanAction.Write -> {
+                if (writeWizardActive) {
+                    "Hold card ${writeWizardIndex + 1} of ${writeWizardRawShares.size} to write the encrypted backup."
+                } else {
+                    "Hold a compatible NFC tag against the phone to write the encrypted message."
+                }
+            }
 
             pendingScanAction is PendingScanAction.Clear ->
                 "Hold a compatible NFC tag against the phone to clear this app's stored content."
@@ -266,8 +281,6 @@ data class MainUiState(
             pendingScanAction is PendingScanAction.Sign ->
                 "Hold your NFC tag against the phone to sign and broadcast the transaction."
 
-            pendingScanAction is PendingScanAction.WriteShare ->
-                "Hold NFC card ${pendingScanAction.currentIndex + 1} of ${pendingScanAction.shares.size} to write SSS share."
 
             pendingScanAction is PendingScanAction.ReadShare -> {
                 val current = pendingScanAction.gathered.size + 1
@@ -283,8 +296,9 @@ data class MainUiState(
         }
 }
 
-class NfcViewModel(
+class NfcViewModel @JvmOverloads constructor(
     private val savedStateHandle: SavedStateHandle,
+    private val defaultDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Default
 ) : ViewModel() {
     private val tagService = NfcTagService()
     private val _uiState = MutableStateFlow(restoreUiState())
@@ -603,97 +617,218 @@ class NfcViewModel(
             }
         }
     }
-
-    fun beginWriteScan() {
+    fun startWriteWizard() {
         val state = _uiState.value
-        when {
-            !state.nfcAvailable -> {
-                updateWriteStatus("This device does not expose an NFC adapter.", isError = true)
+        if (state.writeMessage.isBlank()) {
+            updateWriteStatus("Enter a message or seed phrase before starting.", isError = true)
+            return
+        }
+
+        try {
+            val rawShares = if (state.writeIsMultiNfcSplit) {
+                val words = Bip39Compressor.cleanAndSplitMnemonic(state.writeMessage)
+                val messageBytes = if ((words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess) {
+                    Bip39Compressor.mnemonicToEntropy(words)
+                } else {
+                    state.writeMessage.toByteArray(Charsets.UTF_8)
+                }
+                val shares = ShamirSecretSharing.split(messageBytes, state.writeMultiNfcN, state.writeMultiNfcK)
+                shares.map { share ->
+                    val shareWithK = ByteArray(share.size + 1)
+                    shareWithK[0] = state.writeMultiNfcK.toByte()
+                    System.arraycopy(share, 0, shareWithK, 1, share.size)
+                    shareWithK
+                }
+            } else {
+                val messageBytes = state.writeMessage.toByteArray(Charsets.UTF_8)
+                List(state.writeBackupsCount) { messageBytes }
             }
 
-            !state.nfcEnabled -> {
-                updateWriteStatus("NFC is turned off. Turn it on in Android settings to scan cards.", isError = true)
-            }
-
-            state.isProcessing -> Unit
-            state.writePassword.isBlank() -> {
-                updateWriteStatus("Enter a password before writing a tag.", isError = true)
-            }
-
-            state.writePassword.length < MIN_PASSWORD_LENGTH -> {
-                updateWriteStatus(
-                    "The password must be at least $MIN_PASSWORD_LENGTH characters.",
-                    isError = true,
+            _uiState.update {
+                it.copy(
+                    writeWizardActive = true,
+                    writeWizardIndex = 0,
+                    writeWizardRawShares = rawShares,
+                    writeWizardIsShare = state.writeIsMultiNfcSplit,
+                    writeWizardK = state.writeMultiNfcK,
+                    writeWizardPassword = "",
+                    writeWizardPasswordConfirmation = "",
+                    writeWizardSecondaryMnemonic = "",
+                    writeWizardSecondaryPassword = "",
+                    writeWizardSecondaryPasswordConfirmation = "",
+                    writeWizardGeneratedSecondaryMnemonic = null,
+                    writeWizardIsProcessing = false,
+                    writeStatus = StatusMessage("Configure Card 1 of ${rawShares.size}."),
                 )
             }
+        } catch (e: Exception) {
+            updateWriteStatus("Error preparing backup: ${e.message}", isError = true)
+        }
+    }
 
-            state.writePassword != state.writePasswordConfirmation -> {
-                updateWriteStatus("The password confirmation does not match.", isError = true)
+    fun cancelWriteWizard() {
+        _uiState.update {
+            it.copy(
+                writeWizardActive = false,
+                writeWizardIndex = 0,
+                writeWizardRawShares = emptyList(),
+                writeWizardPassword = "",
+                writeWizardPasswordConfirmation = "",
+                writeWizardSecondaryMnemonic = "",
+                writeWizardSecondaryPassword = "",
+                writeWizardSecondaryPasswordConfirmation = "",
+                writeWizardGeneratedSecondaryMnemonic = null,
+                writeWizardIsProcessing = false,
+                writeStatus = StatusMessage("Backup cancelled."),
+            )
+        }
+    }
+
+    fun proceedWithWizardWrite() {
+        val state = _uiState.value
+        val index = state.writeWizardIndex
+        if (index >= state.writeWizardRawShares.size) return
+
+        if (state.writeWizardPassword.length < MIN_PASSWORD_LENGTH) {
+            updateWriteStatus("The password must be at least $MIN_PASSWORD_LENGTH characters.", isError = true)
+            return
+        }
+        if (state.writeWizardPassword != state.writeWizardPasswordConfirmation) {
+            updateWriteStatus("The passwords do not match.", isError = true)
+            return
+        }
+
+        if (state.writeIsDuressEnabled) {
+            if (state.writeWizardSecondaryMnemonic.isBlank()) {
+                updateWriteStatus("Enter a secondary wallet seed phrase.", isError = true)
+                return
             }
-
-            state.writeMessage.isBlank() -> {
-                updateWriteStatus("Enter a plain-text message before writing a tag.", isError = true)
+            if (state.writeWizardSecondaryPassword.length < MIN_PASSWORD_LENGTH) {
+                updateWriteStatus("The secondary wallet password must be at least $MIN_PASSWORD_LENGTH characters.", isError = true)
+                return
             }
-
-            state.writeIsDuressEnabled && state.writeEmergencyPassword.isBlank() -> {
-                updateWriteStatus("Enter an emergency password before writing a tag.", isError = true)
+            if (state.writeWizardSecondaryPassword != state.writeWizardSecondaryPasswordConfirmation) {
+                updateWriteStatus("The secondary wallet passwords do not match.", isError = true)
+                return
             }
-
-            state.writeIsDuressEnabled && state.writeEmergencyPassword.length < MIN_PASSWORD_LENGTH -> {
-                updateWriteStatus(
-                    "The emergency password must be at least $MIN_PASSWORD_LENGTH characters.",
-                    isError = true,
-                )
+            if (state.writeWizardPassword == state.writeWizardSecondaryPassword) {
+                updateWriteStatus("The main password and secondary wallet password must be different.", isError = true)
+                return
             }
+        }
 
-            state.writeIsDuressEnabled && state.writeEmergencyPassword != state.writeEmergencyPasswordConfirmation -> {
-                updateWriteStatus("The emergency password confirmation does not match.", isError = true)
-            }
+        _uiState.update {
+            it.copy(
+                writeWizardIsProcessing = true,
+                writeStatus = StatusMessage("Encrypting Card ${index + 1}... Please wait.")
+            )
+        }
 
-            state.writeIsDuressEnabled && state.writePassword == state.writeEmergencyPassword -> {
-                updateWriteStatus("The main password and emergency password must be different.", isError = true)
-            }
+        viewModelScope.launch(defaultDispatcher) {
+            try {
+                val rawPayload = state.writeWizardRawShares[index]
+                val iterations = state.writePbkdf2Iterations
+                val isDuress = state.writeIsDuressEnabled
 
-            state.writeIsDuressEnabled && state.writeEmergencyMessage.isBlank() -> {
-                updateWriteStatus("Enter an emergency seed phrase before writing a tag.", isError = true)
-            }
-
-            else -> {
-                _uiState.update {
-                    if (state.writeIsMultiNfcSplit) {
-                        try {
-                            val messageBytes = state.writeMessage.toByteArray(Charsets.UTF_8)
-                            val shares = ShamirSecretSharing.split(messageBytes, state.writeMultiNfcN, state.writeMultiNfcK)
-                            it.copy(
-                                pendingScanAction = PendingScanAction.WriteShare(state.writePassword, shares, 0, state.writeMultiNfcK),
-                                writeStatus = StatusMessage("Ready to scan card 1 of ${state.writeMultiNfcN} for writing."),
-                            )
-                        } catch (e: Exception) {
-                            it.copy(writeStatus = StatusMessage("Error generating secret shares: ${e.message}", isError = true))
-                        }
+                val encryptedPayload = if (state.writeWizardIsShare) {
+                    if (isDuress) {
+                        SecureMessageCodec.encryptShareAndDuressToPayload(
+                            share = rawPayload,
+                            sharePassword = state.writeWizardPassword,
+                            duressMnemonic = state.writeWizardSecondaryMnemonic,
+                            duressPassword = state.writeWizardSecondaryPassword,
+                            iterations = iterations
+                        )
                     } else {
-                        val statusText = if (state.writeBackupsCount > 1) {
-                            "Ready to scan card 1 of ${state.writeBackupsCount} for backup writing."
-                        } else {
-                            "Ready to scan a tag for writing."
-                        }
-                        it.copy(
-                            pendingScanAction = PendingScanAction.Write(
-                                password = state.writePassword,
-                                message = state.writeMessage,
-                                isDuress = state.writeIsDuressEnabled,
-                                emergencyPassword = state.writeEmergencyPassword,
-                                emergencyMessage = state.writeEmergencyMessage,
-                                iterations = state.writePbkdf2Iterations,
-                                currentIndex = 0,
-                                targetCount = state.writeBackupsCount
-                            ),
-                            writeStatus = StatusMessage(statusText),
+                        SecureMessageCodec.encryptShareToPayload(
+                            share = rawPayload,
+                            password = state.writeWizardPassword,
+                            iterations = iterations
                         )
                     }
+                } else {
+                    if (isDuress) {
+                        val mainMessage = String(rawPayload, Charsets.UTF_8)
+                        SecureMessageCodec.encryptDuressToPayload(
+                            mainPlainText = mainMessage,
+                            mainPassword = state.writeWizardPassword,
+                            duressPlainText = state.writeWizardSecondaryMnemonic,
+                            duressPassword = state.writeWizardSecondaryPassword,
+                            iterations = iterations
+                        )
+                    } else {
+                        val mainMessage = String(rawPayload, Charsets.UTF_8)
+                        val words = Bip39Compressor.cleanAndSplitMnemonic(mainMessage)
+                        if ((words.size == 12 || words.size == 24) && runCatching { Bip39Compressor.mnemonicToEntropy(words) }.isSuccess) {
+                            val entropy = Bip39Compressor.mnemonicToEntropy(words)
+                            SecureMessageCodec.encryptEntropyToPayload(
+                                entropy = entropy,
+                                password = state.writeWizardPassword,
+                                iterations = iterations
+                            )
+                        } else {
+                            SecureMessageCodec.encryptToPayload(
+                                plainText = mainMessage,
+                                password = state.writeWizardPassword,
+                                iterations = iterations
+                            )
+                        }
+                    }
+                }
+
+                _uiState.update {
+                    it.copy(
+                        writeWizardIsProcessing = false,
+                        pendingScanAction = PendingScanAction.Write(encryptedPayload),
+                        writeStatus = StatusMessage("Ready to scan card ${index + 1} of ${state.writeWizardRawShares.size} to write the encrypted backup.")
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        writeWizardIsProcessing = false,
+                        writeStatus = StatusMessage("Encryption failed: ${e.message}", isError = true)
+                    )
                 }
             }
         }
+    }
+
+    fun updateWriteWizardPassword(pw: String) {
+        _uiState.update { it.copy(writeWizardPassword = pw) }
+    }
+    fun updateWriteWizardPasswordConfirmation(pw: String) {
+        _uiState.update { it.copy(writeWizardPasswordConfirmation = pw) }
+    }
+    fun updateWriteWizardSecondaryMnemonic(mnemonic: String) {
+        _uiState.update { it.copy(writeWizardSecondaryMnemonic = mnemonic) }
+    }
+    fun updateWriteWizardSecondaryPassword(pw: String) {
+        _uiState.update { it.copy(writeWizardSecondaryPassword = pw) }
+    }
+    fun updateWriteWizardSecondaryPasswordConfirmation(pw: String) {
+        _uiState.update { it.copy(writeWizardSecondaryPasswordConfirmation = pw) }
+    }
+    fun generateWizardSecondaryMnemonic() {
+        val mnemonic = try {
+            Bip39Compressor.generateMnemonic(12).joinToString(" ")
+        } catch (e: Exception) {
+            ""
+        }
+        _uiState.update { it.copy(writeWizardGeneratedSecondaryMnemonic = mnemonic) }
+    }
+    fun useGeneratedWizardSecondaryMnemonic() {
+        _uiState.update { state ->
+            state.writeWizardGeneratedSecondaryMnemonic?.let { mnemonic ->
+                state.copy(
+                    writeWizardSecondaryMnemonic = mnemonic,
+                    writeWizardGeneratedSecondaryMnemonic = null
+                )
+            } ?: state
+        }
+    }
+    fun clearGeneratedWizardSecondaryMnemonic() {
+        _uiState.update { it.copy(writeWizardGeneratedSecondaryMnemonic = null) }
     }
 
     fun updateWriteIsMultiNfcSplit(enabled: Boolean) {
@@ -932,36 +1067,165 @@ class NfcViewModel(
 
     fun beginMultiNfcUnlock() {
         val state = _uiState.value
-        when {
-            !state.nfcAvailable -> {
-                updateReadStatus("This device does not expose an NFC adapter.", isError = true)
-            }
+        if (!state.nfcAvailable) {
+            updateReadStatus("This device does not expose an NFC adapter.", isError = true)
+            return
+        }
+        if (!state.nfcEnabled) {
+            updateReadStatus("NFC is turned off. Turn it on in Android settings.", isError = true)
+            return
+        }
+        _uiState.update {
+            it.copy(
+                readWizardActive = true,
+                readWizardPayloads = emptyList(),
+                readWizardDecryptedShares = emptyList(),
+                readWizardIndex = 0,
+                readWizardK = 2,
+                readWizardPasswordInput = "",
+                readWizardIsProcessing = false,
+                isMultiNfcUnlock = true,
+                pendingScanAction = PendingScanAction.ReadShare("", emptyList(), null),
+                readStatus = StatusMessage("Ready to scan SSS Card 1."),
+            )
+        }
+    }
 
-            !state.nfcEnabled -> {
-                updateReadStatus("NFC is turned off. Turn it on in Android settings.", isError = true)
-            }
+    fun updateReadWizardPasswordInput(pw: String) {
+        _uiState.update { it.copy(readWizardPasswordInput = pw) }
+    }
 
-            state.isProcessing -> Unit
-            state.readPassword.isBlank() -> {
-                updateReadStatus("Enter the password for decryption.", isError = true)
-            }
+    fun decryptWizardShare() {
+        val state = _uiState.value
+        if (state.readWizardPasswordInput.length < MIN_PASSWORD_LENGTH) {
+            _uiState.update { it.copy(readStatus = StatusMessage("Password must be at least $MIN_PASSWORD_LENGTH characters.", isError = true)) }
+            return
+        }
 
-            state.readPassword.length < MIN_PASSWORD_LENGTH -> {
-                updateReadStatus(
-                    "The password must be at least $MIN_PASSWORD_LENGTH characters.",
-                    isError = true,
-                )
-            }
+        _uiState.update { it.copy(readWizardIsProcessing = true, readStatus = StatusMessage("Decrypting share...")) }
 
-            else -> {
+        viewModelScope.launch(defaultDispatcher) {
+            try {
+                val currentPayload = state.readWizardPayloads.getOrNull(state.readWizardIndex)
+                    ?: throw Exception("No scanned payload found for the current index.")
+
+                val decryptedPayloadWithK = SecureMessageCodec.decryptSharePayload(currentPayload, state.readWizardPasswordInput)
+                if (decryptedPayloadWithK.size < 2) {
+                    throw Exception("Invalid SSS share payload decrypted.")
+                }
+
+                val k = decryptedPayloadWithK[0].toInt() and 0xff
+                val shareBytes = decryptedPayloadWithK.copyOfRange(1, decryptedPayloadWithK.size)
+
+                val x = shareBytes[0].toInt() and 0xff
+                val isDuplicateShare = state.readWizardDecryptedShares.any { (it[0].toInt() and 0xff) == x }
+                if (isDuplicateShare) {
+                    throw Exception("This card has already been successfully decrypted. Please scan and decrypt a different card.")
+                }
+
+                val updatedShares = state.readWizardDecryptedShares + shareBytes
+                val nextIndex = updatedShares.size
+
+                if (nextIndex >= k) {
+                    // Reassemble seed
+                    val secretBytes = ShamirSecretSharing.reconstruct(updatedShares)
+                    val mnemonic = if (secretBytes.size == 16 || secretBytes.size == 32) {
+                        Bip39Compressor.entropyToMnemonic(secretBytes).joinToString(" ")
+                    } else {
+                        String(secretBytes, Charsets.UTF_8)
+                    }
+
+                    val derivedList = deriveBitcoinAddressesAll(mnemonic)
+                    val derived = deriveBitcoinAddresses(mnemonic)
+                    if (derived != null) {
+                        val activeType = state.activeAddressType
+                        val addresses = derivedList?.get(activeType) ?: emptyList()
+                        if (addresses.isNotEmpty()) {
+                            fetchBitcoinBalanceAndUtxos(addresses)
+                        } else {
+                            derived[activeType]?.let { addr ->
+                                fetchBitcoinBalanceAndUtxos(addr)
+                            }
+                        }
+                        val nostrKeys = NostrEngine.deriveNostrKeys(mnemonic)
+                        _uiState.update {
+                            it.copy(
+                                pendingScanAction = null,
+                                isMultiNfcUnlock = false,
+                                readWizardActive = false,
+                                readWizardPayloads = emptyList(),
+                                readWizardDecryptedShares = emptyList(),
+                                readWizardIndex = 0,
+                                readWizardPasswordInput = "",
+                                readWizardIsProcessing = false,
+                                readPassword = "",
+                                readMessage = mnemonic,
+                                derivedAddresses = derived,
+                                derivedAddressesList = derivedList,
+                                nostrNsec = nostrKeys?.nsec,
+                                nostrNpub = nostrKeys?.npub,
+                                nostrPubkeyHex = nostrKeys?.pubkeyHex,
+                                readStatus = StatusMessage("SSS Wallet successfully reassembled and unlocked."),
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                pendingScanAction = null,
+                                isMultiNfcUnlock = false,
+                                readWizardActive = false,
+                                readStatus = StatusMessage("Failed to derive addresses from reassembled seed.", isError = true)
+                            )
+                        }
+                    }
+                } else {
+                    // Prompt for next scan
+                    _uiState.update {
+                        it.copy(
+                            readWizardDecryptedShares = updatedShares,
+                            readWizardIndex = nextIndex,
+                            readWizardK = k,
+                            readWizardPasswordInput = "",
+                            readWizardIsProcessing = false,
+                            pendingScanAction = PendingScanAction.ReadShare("", emptyList(), null),
+                            readStatus = StatusMessage("Card ${nextIndex} decrypted! Scan card ${nextIndex + 1} of $k.")
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: "incorrect password or invalid card"
                 _uiState.update {
                     it.copy(
-                        pendingScanAction = PendingScanAction.ReadShare(state.readPassword, emptyList(), null),
-                        isMultiNfcUnlock = true,
-                        readStatus = StatusMessage("Ready to scan any SSS card."),
+                        readWizardIsProcessing = false,
+                        readStatus = StatusMessage("Failed to decrypt card ${state.readWizardIndex + 1}: $errorMsg", isError = true)
                     )
                 }
             }
+        }
+    }
+
+    fun cancelReadWizard() {
+        _uiState.update {
+            it.copy(
+                readWizardActive = false,
+                readWizardPayloads = emptyList(),
+                readWizardDecryptedShares = emptyList(),
+                readWizardIndex = 0,
+                readWizardPasswordInput = "",
+                readWizardIsProcessing = false,
+                isMultiNfcUnlock = false,
+                pendingScanAction = null,
+                readStatus = StatusMessage("SSS unlock cancelled.")
+            )
+        }
+    }
+
+    fun startScanWizardShare() {
+        _uiState.update {
+            it.copy(
+                pendingScanAction = PendingScanAction.ReadShare("", emptyList(), null),
+                readStatus = StatusMessage("Ready to scan SSS Card ${it.readWizardIndex + 1}.")
+            )
         }
     }
 
@@ -1373,7 +1637,7 @@ class NfcViewModel(
                 is PendingScanAction.Write -> {
                     state.copy(
                         isProcessing = true,
-                        writeStatus = StatusMessage("Encrypting and writing the message..."),
+                        writeStatus = StatusMessage("Writing the message..."),
                     )
                 }
 
@@ -1400,17 +1664,11 @@ class NfcViewModel(
                     )
                 }
 
-                is PendingScanAction.WriteShare -> {
-                    state.copy(
-                        isProcessing = true,
-                        writeStatus = StatusMessage("Encrypting and writing share ${action.currentIndex + 1}..."),
-                    )
-                }
 
                 is PendingScanAction.ReadShare -> {
                     state.copy(
                         isProcessing = true,
-                        readStatus = StatusMessage("Reading and decrypting share ${action.gathered.size + 1}..."),
+                        readStatus = StatusMessage("Reading SSS card ${state.readWizardPayloads.size + 1}..."),
                     )
                 }
             }
@@ -1422,43 +1680,23 @@ class NfcViewModel(
                 try {
                     when (action) {
                         is PendingScanAction.Read -> tagService.readEncryptedMessage(tag, action.password)
-                        is PendingScanAction.Write -> tagService.writeEncryptedMessage(
-                            tag = tag,
-                            password = action.password,
-                            message = action.message,
-                            isDuress = action.isDuress,
-                            emergencyPassword = action.emergencyPassword,
-                            emergencyMessage = action.emergencyMessage,
-                            iterations = action.iterations
-                        )
-                        is PendingScanAction.Clear -> tagService.clearTag(tag)
-                        is PendingScanAction.WriteShare -> {
-                            val share = action.shares[action.currentIndex]
-                            val shareWithK = ByteArray(share.size + 1)
-                            shareWithK[0] = action.thresholdK.toByte()
-                            System.arraycopy(share, 0, shareWithK, 1, share.size)
-                            val encryptedPayload = SecureMessageCodec.encryptShareToPayload(shareWithK, action.password)
-                            val writeResult = tagService.writeRawPayload(tag, encryptedPayload)
+                        is PendingScanAction.Write -> {
+                            val writeResult = tagService.writeRawPayload(tag, action.encryptedPayload)
                             if (!writeResult.isSuccess) {
                                 throw java.lang.Exception(writeResult.statusMessage)
                             }
                             writeResult
                         }
+                        is PendingScanAction.Clear -> tagService.clearTag(tag)
                         is PendingScanAction.ReadShare -> {
                             val readPayloadResult = tagService.readEncryptedPayload(tag)
                             if (!readPayloadResult.isSuccess || readPayloadResult.encryptedPayload == null) {
                                 throw java.lang.Exception(readPayloadResult.statusMessage)
                             }
-                            val decryptedPayloadWithK = SecureMessageCodec.decryptSharePayload(readPayloadResult.encryptedPayload, action.password)
-                            if (decryptedPayloadWithK.size < 2) {
-                                throw java.lang.Exception("Invalid SSS share payload decrypted.")
-                            }
-                            val k = decryptedPayloadWithK[0].toInt() and 0xff
-                            val shareBytes = decryptedPayloadWithK.copyOfRange(1, decryptedPayloadWithK.size)
                             NfcOperationResult(
                                 isSuccess = true,
-                                statusMessage = "Share read successfully.",
-                                decryptedMessage = "${k}:${shareBytes.toHex()}",
+                                statusMessage = "Card read successfully.",
+                                decryptedMessage = readPayloadResult.encryptedPayload.toHex(),
                                 tagInfo = readPayloadResult.tagInfo
                             )
                         }
@@ -1592,12 +1830,36 @@ class NfcViewModel(
 
                     is PendingScanAction.Write -> {
                         if (result.isSuccess) {
-                            val nextIndex = action.currentIndex + 1
-                            if (nextIndex < action.targetCount) {
-                                nextState.copy(
-                                    pendingScanAction = action.copy(currentIndex = nextIndex),
-                                    writeStatus = StatusMessage("Backup tag ${nextIndex} of ${action.targetCount} written successfully. Ready to scan card ${nextIndex + 1} of ${action.targetCount}."),
-                                )
+                            if (state.writeWizardActive) {
+                                val nextIndex = state.writeWizardIndex + 1
+                                if (nextIndex < state.writeWizardRawShares.size) {
+                                    nextState.copy(
+                                        writeWizardIndex = nextIndex,
+                                        writeWizardPassword = "",
+                                        writeWizardPasswordConfirmation = "",
+                                        writeWizardSecondaryMnemonic = "",
+                                        writeWizardSecondaryPassword = "",
+                                        writeWizardSecondaryPasswordConfirmation = "",
+                                        writeWizardGeneratedSecondaryMnemonic = null,
+                                        pendingScanAction = null,
+                                        writeStatus = StatusMessage("Configure Card ${nextIndex + 1} of ${state.writeWizardRawShares.size}."),
+                                    )
+                                } else {
+                                    nextState.copy(
+                                        writeWizardActive = false,
+                                        writeWizardIndex = 0,
+                                        writeWizardRawShares = emptyList(),
+                                        writeWizardPassword = "",
+                                        writeWizardPasswordConfirmation = "",
+                                        writeWizardSecondaryMnemonic = "",
+                                        writeWizardSecondaryPassword = "",
+                                        writeWizardSecondaryPasswordConfirmation = "",
+                                        writeWizardGeneratedSecondaryMnemonic = null,
+                                        writeMessage = "",
+                                        pendingScanAction = null,
+                                        writeStatus = StatusMessage("Successfully wrote all ${state.writeWizardRawShares.size} tags!"),
+                                    )
+                                }
                             } else {
                                 nextState.copy(
                                     writePassword = "",
@@ -1609,14 +1871,21 @@ class NfcViewModel(
                                     writeIsDuressEnabled = false,
                                     estimatedNdefWriteSizeBytes = 0,
                                     estimatedMifareClassicWriteSizeBytes = 0,
-                                    writeStatus = StatusMessage("Successfully wrote to all ${action.targetCount} backup tags.", isError = false),
+                                    writeStatus = StatusMessage("Successfully wrote to tag.", isError = false),
                                     pendingScanAction = null,
                                 )
                             }
                         } else {
                             nextState.copy(
                                 pendingScanAction = action,
-                                writeStatus = StatusMessage("Failed to write tag ${action.currentIndex + 1}: ${result.statusMessage}. Tap tag to retry.", isError = true),
+                                writeStatus = StatusMessage(
+                                    if (state.writeWizardActive) {
+                                        "Failed to write card ${state.writeWizardIndex + 1}: ${result.statusMessage}. Tap tag to retry."
+                                    } else {
+                                        "Failed to write tag: ${result.statusMessage}. Tap tag to retry."
+                                    },
+                                    isError = true
+                                ),
                             )
                         }
                     }
@@ -1676,101 +1945,34 @@ class NfcViewModel(
                         }
                     }
 
-                    is PendingScanAction.WriteShare -> {
-                        if (result.isSuccess) {
-                            if (action.currentIndex < action.shares.size - 1) {
-                                val nextIndex = action.currentIndex + 1
-                                nextState.copy(
-                                    pendingScanAction = PendingScanAction.WriteShare(action.password, action.shares, nextIndex, action.thresholdK),
-                                    writeStatus = StatusMessage("Share ${action.currentIndex + 1} written. Hold card ${nextIndex + 1} of ${action.shares.size} to write the next share."),
-                                )
-                            } else {
-                                nextState.copy(
-                                    pendingScanAction = null,
-                                    writePassword = "",
-                                    writePasswordConfirmation = "",
-                                    writeMessage = "",
-                                    estimatedNdefWriteSizeBytes = 0,
-                                    estimatedMifareClassicWriteSizeBytes = 0,
-                                    writeStatus = StatusMessage("Successfully wrote all ${action.shares.size} shares!"),
-                                )
-                            }
-                        } else {
-                            nextState.copy(
-                                pendingScanAction = null,
-                                writeStatus = StatusMessage("Failed to write share ${action.currentIndex + 1}: ${result.statusMessage}", isError = true),
-                            )
-                        }
-                    }
-
                     is PendingScanAction.ReadShare -> {
                         if (result.isSuccess) {
-                            val parts = result.decryptedMessage?.split(":")
-                            if (parts != null && parts.size == 2) {
-                                val k = parts[0].toIntOrNull() ?: 2
-                                val newShareBytes = parts[1].hexToBytes()
-                                val updatedGathered = action.gathered + listOfNotNull(newShareBytes)
-                                if (updatedGathered.size >= k) {
-                                    try {
-                                        val secretBytes = ShamirSecretSharing.reconstruct(updatedGathered)
-                                        val mnemonic = String(secretBytes, Charsets.UTF_8)
-                                        val derivedList = deriveBitcoinAddressesAll(mnemonic)
-                                        val derived = deriveBitcoinAddresses(mnemonic)
-                                        if (derived != null) {
-                                            val activeType = state.activeAddressType
-                                            val addresses = derivedList?.get(activeType) ?: emptyList()
-                                            if (addresses.isNotEmpty()) {
-                                                fetchBitcoinBalanceAndUtxos(addresses)
-                                            } else {
-                                                derived[activeType]?.let { addr ->
-                                                    fetchBitcoinBalanceAndUtxos(addr)
-                                                }
-                                            }
-                                            val nostrKeys = NostrEngine.deriveNostrKeys(mnemonic)
-                                            nextState.copy(
-                                                pendingScanAction = null,
-                                                isMultiNfcUnlock = false,
-                                                readPassword = "",
-                                                readMessage = mnemonic,
-                                                derivedAddresses = derived,
-                                                derivedAddressesList = derivedList,
-                                                nostrNsec = nostrKeys?.nsec,
-                                                nostrNpub = nostrKeys?.npub,
-                                                nostrPubkeyHex = nostrKeys?.pubkeyHex,
-                                                readStatus = StatusMessage("SSS Wallet successfully reassembled and unlocked."),
-                                            )
-                                        } else {
-                                            nextState.copy(
-                                                pendingScanAction = null,
-                                                isMultiNfcUnlock = false,
-                                                readStatus = StatusMessage("Failed to derive addresses from reassembled seed.", isError = true),
-                                            )
-                                        }
-                                    } catch (e: Exception) {
-                                        nextState.copy(
-                                            pendingScanAction = null,
-                                            isMultiNfcUnlock = false,
-                                            readStatus = StatusMessage("Failed to reconstruct: ${e.message}. Ensure you scanned distinct password-matching shares.", isError = true),
-                                        )
-                                    }
-                                } else {
+                            val payloadBytes = result.decryptedMessage?.hexToBytes()
+                            if (payloadBytes != null) {
+                                val isDuplicate = state.readWizardPayloads.any { it.contentEquals(payloadBytes) }
+                                if (isDuplicate) {
                                     nextState.copy(
-                                        pendingScanAction = PendingScanAction.ReadShare(action.password, updatedGathered, k),
-                                        readStatus = StatusMessage("Share ${updatedGathered.size} of $k read. Hold card ${updatedGathered.size + 1} of $k against the phone to read the next share."),
+                                        pendingScanAction = null,
+                                        readStatus = StatusMessage("This card has already been scanned. Please scan a different card.", isError = true)
+                                    )
+                                } else {
+                                    val updatedPayloads = state.readWizardPayloads + payloadBytes
+                                    nextState.copy(
+                                        readWizardPayloads = updatedPayloads,
+                                        pendingScanAction = null,
+                                        readStatus = StatusMessage("Card ${updatedPayloads.size} scanned successfully! Enter password below to decrypt.")
                                     )
                                 }
                             } else {
                                 nextState.copy(
                                     pendingScanAction = null,
-                                    isMultiNfcUnlock = false,
-                                    readStatus = StatusMessage("Failed to parse SSS share payload.", isError = true),
+                                    readStatus = StatusMessage("Failed to parse read payload.", isError = true)
                                 )
                             }
                         } else {
                             nextState.copy(
                                 pendingScanAction = null,
-                                isMultiNfcUnlock = false,
-                                readStatus = StatusMessage("Failed to read SSS share: ${result.statusMessage}", isError = true),
+                                readStatus = StatusMessage("Failed to read SSS share: ${result.statusMessage}", isError = true)
                             )
                         }
                     }
@@ -2139,10 +2341,16 @@ class NfcViewModel(
 
         val message = when (this) {
             is PendingScanAction.Read -> "Message decrypted."
-            is PendingScanAction.Write -> "Backup tag ${currentIndex + 1} of $targetCount written."
+            is PendingScanAction.Write -> {
+                val state = _uiState.value
+                if (state.writeWizardActive) {
+                    "Card ${state.writeWizardIndex + 1} of ${state.writeWizardRawShares.size} written."
+                } else {
+                    "Backup tag written."
+                }
+            }
             is PendingScanAction.Clear -> "Card cleared."
             is PendingScanAction.Sign -> "Transaction broadcasted."
-            is PendingScanAction.WriteShare -> "Share ${currentIndex + 1} written."
             is PendingScanAction.ReadShare -> "Share ${gathered.size + 1} read."
         }
         return UserFeedbackEvent(message, FeedbackTone.Success)
@@ -2154,7 +2362,6 @@ class NfcViewModel(
             is PendingScanAction.Write -> "write"
             is PendingScanAction.Clear -> "clear"
             is PendingScanAction.Sign -> "sign"
-            is PendingScanAction.WriteShare -> "write share"
             is PendingScanAction.ReadShare -> "read share"
         }
 

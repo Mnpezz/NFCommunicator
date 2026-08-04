@@ -68,6 +68,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             navigationBarStyle = SystemBarStyle.dark(getColor(R.color.ember_surface)),
         )
         syncNfcStateFromSystem()
+        try {
+            val webViewDir = java.io.File(filesDir.parentFile, "app_webview")
+            if (webViewDir.exists()) {
+                deleteDir(webViewDir)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("WebViewCleanup", "Failed to clear app_webview", e)
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.feedbackEvents.collect(::showOperationFeedback)
@@ -133,7 +141,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     onWritePasswordConfirmationChanged = viewModel::updateWritePasswordConfirmation,
                     onWriteMessageChanged = viewModel::updateWriteMessage,
                     onStartRead = viewModel::beginReadScan,
-                    onStartWrite = viewModel::beginWriteScan,
+                    onStartWrite = viewModel::startWriteWizard,
                     onClearCard = viewModel::beginClearScan,
                     onCancelPendingScan = viewModel::cancelPendingScan,
                     onForgetCard = viewModel::forgetCard,
@@ -150,11 +158,25 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     onCancelSend = viewModel::cancelSend,
                     onCloseWallet = viewModel::closeWallet,
                     onStartMultiNfcUnlock = viewModel::beginMultiNfcUnlock,
+                    onReadWizardPasswordInputChanged = viewModel::updateReadWizardPasswordInput,
+                    onDecryptWizardShare = viewModel::decryptWizardShare,
+                    onScanWizardShare = viewModel::startScanWizardShare,
+                    onCancelReadWizard = viewModel::cancelReadWizard,
                     onWriteIsMultiNfcSplitChanged = viewModel::updateWriteIsMultiNfcSplit,
                     onWriteMultiNfcNChanged = viewModel::updateWriteMultiNfcN,
                     onWriteMultiNfcKChanged = viewModel::updateWriteMultiNfcK,
                     onWritePbkdf2IterationsChanged = viewModel::onWritePbkdf2IterationsChanged,
                     onWriteBackupsCountChanged = viewModel::onWriteBackupsCountChanged,
+                    onWizardPasswordChanged = viewModel::updateWriteWizardPassword,
+                    onWizardPasswordConfirmationChanged = viewModel::updateWriteWizardPasswordConfirmation,
+                    onWizardSecondaryMnemonicChanged = viewModel::updateWriteWizardSecondaryMnemonic,
+                    onWizardSecondaryPasswordChanged = viewModel::updateWriteWizardSecondaryPassword,
+                    onWizardSecondaryPasswordConfirmationChanged = viewModel::updateWriteWizardSecondaryPasswordConfirmation,
+                    onGenerateWizardSecondaryMnemonic = viewModel::generateWizardSecondaryMnemonic,
+                    onUseGeneratedWizardSecondaryMnemonic = viewModel::useGeneratedWizardSecondaryMnemonic,
+                    onClearGeneratedWizardSecondaryMnemonic = viewModel::clearGeneratedWizardSecondaryMnemonic,
+                    onProceedWizardWrite = viewModel::proceedWithWizardWrite,
+                    onCancelWizard = viewModel::cancelWriteWizard,
                     onSelectAddressType = viewModel::selectAddressType,
                     onToggleUtxoSelection = viewModel::toggleUtxoSelection,
                     onWriteIsDuressEnabledChanged = viewModel::updateWriteIsDuressEnabled,
@@ -466,6 +488,21 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             android.util.Log.e("NfcMainActivity", "Error parsing NostrSignerRequest: ${e.message}", e)
             null
         }
+    }
+
+    private fun deleteDir(dir: java.io.File): Boolean {
+        if (dir.isDirectory) {
+            val children = dir.list()
+            if (children != null) {
+                for (child in children) {
+                    val success = deleteDir(java.io.File(dir, child))
+                    if (!success) {
+                        return false
+                    }
+                }
+            }
+        }
+        return dir.delete()
     }
 
     private companion object {

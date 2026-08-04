@@ -162,4 +162,27 @@ class SecureMessageCodecTest {
 
         assertArrayEquals(share, decrypted)
     }
+
+    @Test
+    fun hybridShareAndDuressUnlockRoundTrip() {
+        val vaultPassword = "vault-password"
+        val share = byteArrayOf(1, 2, 3, 4, 5)
+        val duressPassword = "duress-password"
+        val duressMnemonic = "about about about about about about about about about about about about"
+
+        val payload = SecureMessageCodec.encryptShareAndDuressToPayload(
+            share = share,
+            sharePassword = vaultPassword,
+            duressMnemonic = duressMnemonic,
+            duressPassword = duressPassword
+        )
+
+        // Decrypting with duressPassword returns duressMnemonic
+        val decryptedDuress = SecureMessageCodec.decryptPayload(payload, duressPassword)
+        assertEquals(duressMnemonic, decryptedDuress)
+
+        // Decrypting share with vaultPassword returns standard SSS share bytes
+        val decryptedShare = SecureMessageCodec.decryptSharePayload(payload, vaultPassword)
+        assertArrayEquals(share, decryptedShare)
+    }
 }

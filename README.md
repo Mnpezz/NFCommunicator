@@ -1,30 +1,38 @@
 # NFCommunicator
 
-**NFCommunicator is an offline cryptographic identity wallet that stores encrypted secrets on inexpensive NFC cards.** It securely manages Bitcoin wallet seeds, Nostr identities, Cashu credentials, and private messages without relying on cloud services or permanently storing secrets on your phone.  
+**NFCommunicator is an Android application that serves as an offline cryptographic identity wallet.** It uses inexpensive, physical NFC cards as encrypted portable storage for Bitcoin wallet seeds, Nostr identities, Cashu credentials, and secure messages. 
 
 ---
 
 ## Why NFCommunicator?
 
 *   **Offline Secrets Storage**: Unlike hardware wallets that require USB/Bluetooth or password managers relying on cloud sync, NFCommunicator stores your secrets on physical, offline NFC cards.
-*   **Why NFC over a Hardware Wallet?**: NFC cards cost only a few dollars, require no batteries, are easy to duplicate for backup purposes, and can be securely stored in multiple physical locations.
+*   **Why NFC Cards?**: NFC cards cost only a few dollars, require no batteries, are easy to duplicate for backup purposes, and can be securely stored in multiple physical locations.
 *   **Zero Local Footprint**: Your seed phrase never permanently resides on your phone's storage. It is only decrypted in memory when you tap your card and enter your password, then wiped immediately upon closing.
-*   **Duress Protection**: Configure a secondary emergency password that reveals an alternate encrypted payload (like a dummy seed or custom message) instead of your real wallet keys.
+*   **Secondary Wallet / Decoy Payload**: Configure optional encrypted secondary payloads protected by separate passwords. These payloads can contain independent single-signature wallets, messages, or decoy data while remaining cryptographically separate from the primary vault.
 *   **Fault-Tolerant Backups**: Distribute your keys across multiple cards using Shamir's Secret Sharing (SSS) to create robust `k-of-n` backups (e.g., needing any 2 out of 3 tags to reconstruct your wallet).
 *   **Privacy by Default**: Modern SegWit/Taproot address rotation and Silent Payments reduce address reuse and improve receiver privacy.
 
 ---
 
-## Feature Comparison
+## Comparison Matrix
 
-| Feature | NFCommunicator | Typical Hardware Wallet | Standard Software Wallet |
+| Feature / Property | NFCommunicator | Typical Hardware Wallet | Standard Software Wallet |
 | :--- | :---: | :---: | :---: |
-| **Offline Secret Storage** | NFC Card | Secure Element | Device Storage |
+| **Self-Custody (User owns keys)** | ✅ | ✅ | ✅ |
+| **BIP-39 Mnemonic Standard** | ✅ | ✅ | ✅ |
 | **Local Transaction Signing** | ✅ | ✅ | ✅ |
+| **SegWit / Taproot Support** | ✅ | ✅ | ✅ |
+| **No Key Cloud Sync / Telemetry** | ✅ | ✅ | ❌ (many sync by default) |
+| **Offline Secret Security** | ✅ (NFC Card) | ✅ (Secure Element) | ❌ (Device Storage) |
+| **Zero Local Key Storage Footprint** | ✅ (Wiped in RAM) | ✅ (Wiped in RAM) | ❌ (Saved in Keystore/DB) |
+| **In-App Nostr Web Browser (NIP-07)** | ✅ | ❌ | Rare |
 | **Nostr Signer (NIP-55)** | ✅ | Rare | Some |
-| **Cashu** | ✅ | Rare | Some |
-| **Silent Payments** | ✅ | Rare | Rare |
-| **Shamir Backup** | ✅ | Some | Rare |
+| **Cashu eCash (NIP-60)** | ✅ | Rare | Some |
+| **Silent Payments (BIP-352)** | 🚧 | Rare | Rare |
+| **Shamir's Secret Sharing Backup** | ✅ | Some | Rare |
+| **Secondary Wallet / Decoy Payload** | ✅ | Rare | ❌ |
+| **Hardware Unit Cost** | $1 - $20 | $60 - $200 | $0 |
 
 ---
 
@@ -37,24 +45,30 @@
                    │
            AES-256-GCM Decryption
                    │
-              BIP-39 Mnemonic
-                   │
-       ┌───────────┼───────────┐
-       │           │           │
-  Bitcoin      Nostr       Cashu
-  BIP-84       NIP-06      NIP-60
-  Taproot      NIP-55
-  Silent Pay
+              Decrypted Payload
+                   |
+     ┌─────────────┴─────────────┐
+     │                           │
+Primary Vault Data          Secondary Payload
+     │                           │
+     BIP-39 Seed             Wallet / Message
+     │
+   ┌─┴─────────┬──────────┬───────────┐
+   │           │          │           │
+Bitcoin      Nostr       Cashu      Browser
+BIP-84       NIP-06      NIP-60      NIP-07
+Taproot      NIP-55
+Silent Pay
 ```
 
 ---
 
 ## Security Model
 
-*   **✓ Sealed Cards**: Private keys never leave the NFC card unencrypted.
+*   **✓ Encrypted Card Storage**: Private keys are stored encrypted on the NFC card and only decrypted temporarily in volatile memory when unlocked.
 *   **✓ Zero Logs**: Passwords and decryption pins are never written to permanent disk storage or system logs.
 *   **✓ Volatile Memory Only**: Decrypted seeds, private keys, and Nostr keys exist strictly in volatile RAM.
-*   **✓ Auto-Wiping**: Active wallet memory is immediately purged and garbage-collected when the wallet is closed.
+*   **✓ Auto-Wiping**: Active wallet memory is immediately purged when the wallet is closed.
 *   **✓ No Cloud Sync**: Complete absence of network backups, cloud synchronization, or remote telemetry.
 *   **✓ Local Cryptography**: Private keys are decrypted and transactions are built/signed entirely on-device.
 *   **✓ Auditable**: 100% open source, deterministic, and independently auditable build system.
@@ -69,7 +83,7 @@
 
 | Write & Backup | Nostr Signer Prompt | Coin Control |
 | :---: | :---: | :---: |
-| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/ecash.png)](docs/screenshots/ecash.png) |
+| [![Write Screen](docs/screenshots/write.png)](docs/screenshots/write.png) | [![Nostr Signer](docs/screenshots/nostr_signer.png)](docs/screenshots/nostr_signer.png) | [![Coin Control](docs/screenshots/coin_control.png)](docs/screenshots/coin_control.png) |
 
 ---
 
@@ -91,8 +105,30 @@ If you prefer to compile and install the application yourself, proceed to the [B
 *   **Hardened Key Derivation**: Uses AES-256-GCM with a high work factor of **2,000,000 PBKDF2-HMAC-SHA256 iterations** to resist offline GPU brute-force cracking. Fallback trial decryption at **600,000 iterations** preserves compatibility with older written tags.
 *   **Volatile Memory Purging**: Plaintext password buffers are wiped from state on tab changes, scan cancellations, or wallet closure. All decrypted credentials (seeds, Nostr keys, etc.) are nulled when locking the wallet.
 *   **"Forget Card" Option**: Instantly purges the cached encrypted NDEF payload from volatile memory to reset the screen to a fresh scan state without restarting the app.
-*   **Shamir's Secret Sharing (SSS)**: Securely split your BIP-39 mnemonic seed phrase across multiple physical tags with configurable thresholds (e.g. 3 SSS shares with a 2-share threshold).
-*   **Duress / Emergency Payload**: Write an alternative emergency message (e.g., dummy seed or custom notice) mapped to a secondary emergency password. Entering the emergency password decrypts the dummy payload instead of your real wallet.
+*   **Shamir's Secret Sharing (SSS) Backup**: Securely split your BIP-39 mnemonic seed phrase across multiple physical tags with configurable thresholds (e.g. 3 SSS shares with a 2-share threshold).
+    *   **Under the Hood**: A single BIP-39 mnemonic seed phrase (the root secret) is mathematically split into $N$ unique physical shares (e.g., written to 3 separate NFC cards/rings).
+    *   **Unlocking**: You scan any $K$ cards (e.g., 2 of the 3 cards) and enter their passwords. The app reconstructs the original seed phrase in volatile memory to derive a standard Taproot/SegWit single-signature private key.
+    *   **On-Chain Footprint**: Transactions look exactly like standard, cheap single-signature transactions.
+    *   **Compatibility**: You don't need to coordinate/save XPUBs (public keys) or back up complex descriptor files like you do in a traditional multisig setup. If the app is unavailable, the underlying SSS shares can be recovered using compatible offline recovery tooling.
+    *   **Vault + Secondary Wallet Design**: Each NFC share can optionally contain an encrypted secondary single-signature wallet alongside its SSS vault share. This wallet can be used for everyday spending, emergency access, or a decoy wallet depending on the user's needs. The high-value vault remains protected by Shamir Secret Sharing and requires the configured quorum of shares.
+    
+
+#### SSS Multi-Share Vault (2-of-3) Example
+
+| Card | Share | Password | Secondary Wallet | Wallet Password |
+| :--- | :--- | :---: | :--- | :---: |
+| **Card 1** | 🔑 Share 1 | `123` | 🪙 Secondary Wallet A | `aaa` |
+| **Card 2** | 🔑 Share 2 | `456` | 🪙 Secondary Wallet B | `bbb` |
+| **Card 3** | 🔑 Share 3 | `789` | 🪙 Secondary Wallet C | `ccc` |
+
+> [!NOTE]
+> **Vault Reconstruction**: Scan any 2 of the 3 cards and enter their passwords to reconstruct the primary seed in volatile memory.
+> **Secondary Wallets**: Each secondary wallet is independently encrypted and can be unlocked using only that card and its unique secondary password.
+
+
+*   **Dual-Layer Card Security**: Each NFC card can contain multiple encrypted payloads, each protected by its own password. The vault share and secondary wallet operate independently, allowing different security policies for recovery, daily use, and emergency access.
+*   **Secondary Wallet / Decoy Payload**: Write an alternative secondary wallet mnemonic or message mapped to a secondary password. Entering the secondary password decrypts this secondary payload instead of your primary wallet keys.
+
 
 ### 🧡 On-Chain Bitcoin Wallet
 *   **Modern Defaults**: Prioritizes **Native SegWit (BIP-84)** and **Taproot (BIP-86)** address formats at the top of the interface.
@@ -102,8 +138,13 @@ If you prefer to compile and install the application yourself, proceed to the [B
 *   **Granular Coin Control**: Inspect your UTXOs with detailed derivation indices and select exactly which inputs to sign.
 *   **Camera-based QR Scanner**: Easily scan recipient addresses and transaction details.
 
-### 💜 Nostr Signer (NIP-55)
-*   **Seamless Integration**: Operates as a background service allowing external Nostr clients (Amethyst, Wisp, etc.) to request public keys, sign events, or perform NIP-04/NIP-44 encryption/decryption.
+### 💜 Nostr Signer & In-App Browser
+*   **Hardened In-App Nostr Browser**: Features a built-in browser (defaulting to `mynostrspace.com`) that automatically injects NIP-07 script APIs (`window.nostr`) to log into any web-based Nostr client (like Primal, Iris, Coracle, Snort, or Nostrudel) securely.
+    *   **Zero-Permission Sandbox**: Operates entirely within a zero-permission network profile. It requests no location, camera, or personal device permissions to protect your physical privacy.
+    *   **Anti-Fingerprinting**: Improves compatibility with websites that reject embedded WebViews by presenting a standard mobile Chrome user agent.
+    *   **Double-Isolated Sessions**: The browser session and active page persist smoothly while you navigate other wallet tabs (checking eCash balances or scanning QR codes), but everything is completely and aggressively purged on startup and wallet closure to prevent persistent web tracking.
+*   **On-Screen Approval Prompts**: Confirms event signing and NIP-04/NIP-44 encryption/decryption requests via native popup dialogs, keeping the private key safely hidden from the website code.
+*   **NIP-55 Nostr Signer Service**: Operates as an external background service allowing other native Android apps (Amethyst, Wisp, etc.) to request public keys, sign events, or perform encryption/decryption.
 *   **Package Allowlisting**: Validates the calling package name. Prevents automated calls from unapproved apps and stores authorized package credentials in a persistent allowlist.
 *   **Auto-Approval Rules**: Set customizable event permissions to automatically sign specific event types (e.g. kind 5, 22242, 10050, 31234) and NIP-04/NIP-44 actions.
 *   **Switch Account UX**: Change active profiles or scan a new NFC tag directly from the signer request prompt.
@@ -130,7 +171,7 @@ This app utilizes standard NDEF APIs for maximum compatibility (e.g., NTAG serie
 *   **Forget**: If a card is cached but you wish to clear it from memory, tap the red **Forget Card** button next to the password input.
 
 ### 2. Wallet Dashboard (Unlocked State)
-*   Provides On-chain, Nostr, and eCash tabs. 
+*   Provides On-chain, Nostr, eCash, and Browser tabs.
 *   Displays modern SegWit/Taproot receiving addresses, total balance, coin control UTXOs, and the transaction sending form.
 *   *Note:* Hides the Coin Control panel for Nostr Taproot, and hides both On-chain Balance and Coin Control panels for Silent Payments (replaced with the setup warning card).
 

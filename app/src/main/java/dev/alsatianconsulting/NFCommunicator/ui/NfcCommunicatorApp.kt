@@ -49,6 +49,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -70,6 +71,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.Alignment
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
@@ -77,6 +80,12 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
@@ -91,6 +100,17 @@ import dev.alsatianconsulting.NFCommunicator.QrTargetField
 import dev.alsatianconsulting.NFCommunicator.PendingScanAction
 import android.Manifest
 import android.content.pm.PackageManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
+import android.webkit.JavascriptInterface
+import android.webkit.WebSettings
+import androidx.webkit.WebViewFeature
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -166,6 +186,10 @@ fun NfcCommunicatorApp(
     onCancelSend: () -> Unit,
     onCloseWallet: () -> Unit,
     onStartMultiNfcUnlock: () -> Unit,
+    onReadWizardPasswordInputChanged: (String) -> Unit = {},
+    onDecryptWizardShare: () -> Unit = {},
+    onScanWizardShare: () -> Unit = {},
+    onCancelReadWizard: () -> Unit = {},
     onWriteIsMultiNfcSplitChanged: (Boolean) -> Unit,
     onWriteMultiNfcNChanged: (Int) -> Unit,
     onWriteMultiNfcKChanged: (Int) -> Unit,
@@ -216,6 +240,16 @@ fun NfcCommunicatorApp(
     onApproveNostrRequestWithCurrent: () -> Unit = {},
     onRejectNostrRequest: () -> Unit = {},
     onAutoSignRememberChanged: (Boolean) -> Unit = {},
+    onWizardPasswordChanged: (String) -> Unit = {},
+    onWizardPasswordConfirmationChanged: (String) -> Unit = {},
+    onWizardSecondaryMnemonicChanged: (String) -> Unit = {},
+    onWizardSecondaryPasswordChanged: (String) -> Unit = {},
+    onWizardSecondaryPasswordConfirmationChanged: (String) -> Unit = {},
+    onGenerateWizardSecondaryMnemonic: () -> Unit = {},
+    onUseGeneratedWizardSecondaryMnemonic: () -> Unit = {},
+    onClearGeneratedWizardSecondaryMnemonic: () -> Unit = {},
+    onProceedWizardWrite: () -> Unit = {},
+    onCancelWizard: () -> Unit = {},
     onClearAutoSignRules: () -> Unit = {},
     onToggleAutoSignKind22242: (Boolean) -> Unit = {},
     onToggleAutoSignKind10050: (Boolean) -> Unit = {},
@@ -226,6 +260,12 @@ fun NfcCommunicatorApp(
     onDismissNostrError: () -> Unit = {},
     onForgetCard: () -> Unit = {}
 ) {
+    var activeWalletTab by remember { mutableIntStateOf(0) }
+    val handleCloseWallet = {
+        activeWalletTab = 0
+        onCloseWallet()
+    }
+
     if (uiState.nostrSignerRequest != null) {
         NostrSignerScreen(
             uiState = uiState,
@@ -235,7 +275,7 @@ fun NfcCommunicatorApp(
             onApprove = onApproveNostrRequestWithCurrent,
             onReject = onRejectNostrRequest,
             onAutoSignRememberChanged = onAutoSignRememberChanged,
-            onSwitchAccount = onCloseWallet,
+            onSwitchAccount = handleCloseWallet,
             onDismissError = onDismissNostrError
         )
         return
@@ -243,6 +283,13 @@ fun NfcCommunicatorApp(
 
     val scrollState = rememberScrollState()
     val interactionEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
+    val isBrowserActive = activeWalletTab == 3 && uiState.derivedAddresses != null
+    val scrollModifier = if (!isBrowserActive) {
+        Modifier.verticalScroll(scrollState)
+    } else {
+        Modifier
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
     ) { innerPadding ->
@@ -251,7 +298,7 @@ fun NfcCommunicatorApp(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(horizontal = 20.dp, vertical = 16.dp)
-                .verticalScroll(scrollState),
+                .then(scrollModifier),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             uiState.pendingPrompt?.let { prompt ->
@@ -260,8 +307,10 @@ fun NfcCommunicatorApp(
                 )
             }
 
-            uiState.lastTagInfo?.let { tagInfo ->
-                TagSummaryPanel(tagInfo = tagInfo)
+            if (uiState.selectedScreen != AppScreen.Read || activeWalletTab != 3) {
+                uiState.lastTagInfo?.let { tagInfo ->
+                    TagSummaryPanel(tagInfo = tagInfo)
+                }
             }
 
             TabRow(
@@ -284,6 +333,8 @@ fun NfcCommunicatorApp(
 
             when (uiState.selectedScreen) {
                 AppScreen.Read -> ReadScreen(
+                    activeTab = activeWalletTab,
+                    onActiveTabChanged = { activeWalletTab = it },
                     uiState = uiState,
                     onReadPasswordChanged = onReadPasswordChanged,
                     onStartRead = onStartRead,
@@ -298,8 +349,12 @@ fun NfcCommunicatorApp(
                     onInitiateSend = onInitiateSend,
                     onConfirmSendAndScan = onConfirmSendAndScan,
                     onCancelSend = onCancelSend,
-                    onCloseWallet = onCloseWallet,
+                    onCloseWallet = handleCloseWallet,
                     onStartMultiNfcUnlock = onStartMultiNfcUnlock,
+                    onReadWizardPasswordInputChanged = onReadWizardPasswordInputChanged,
+                    onDecryptWizardShare = onDecryptWizardShare,
+                    onScanWizardShare = onScanWizardShare,
+                    onCancelReadWizard = onCancelReadWizard,
                     onBreezApiKeyChanged = onBreezApiKeyChanged,
                     onBreezNetworkChanged = onBreezNetworkChanged,
                     onBreezConnect = onBreezConnect,
@@ -365,6 +420,16 @@ fun NfcCommunicatorApp(
                     onGenerateEmergencyMnemonic = onGenerateEmergencyMnemonic,
                     onUseGeneratedEmergencyMnemonic = onUseGeneratedEmergencyMnemonic,
                     onClearGeneratedEmergencyMnemonic = onClearGeneratedEmergencyMnemonic,
+                    onWizardPasswordChanged = onWizardPasswordChanged,
+                    onWizardPasswordConfirmationChanged = onWizardPasswordConfirmationChanged,
+                    onWizardSecondaryMnemonicChanged = onWizardSecondaryMnemonicChanged,
+                    onWizardSecondaryPasswordChanged = onWizardSecondaryPasswordChanged,
+                    onWizardSecondaryPasswordConfirmationChanged = onWizardSecondaryPasswordConfirmationChanged,
+                    onGenerateWizardSecondaryMnemonic = onGenerateWizardSecondaryMnemonic,
+                    onUseGeneratedWizardSecondaryMnemonic = onUseGeneratedWizardSecondaryMnemonic,
+                    onClearGeneratedWizardSecondaryMnemonic = onClearGeneratedWizardSecondaryMnemonic,
+                    onProceedWizardWrite = onProceedWizardWrite,
+                    onCancelWizard = onCancelWizard,
                 )
             }
         }
@@ -389,6 +454,8 @@ private const val CLIPBOARD_AUTO_CLEAR_DELAY_MS = 60_000L
 
 @Composable
 private fun ReadScreen(
+    activeTab: Int,
+    onActiveTabChanged: (Int) -> Unit,
     uiState: MainUiState,
     onReadPasswordChanged: (String) -> Unit,
     onStartRead: () -> Unit,
@@ -404,6 +471,10 @@ private fun ReadScreen(
     onCancelSend: () -> Unit,
     onCloseWallet: () -> Unit,
     onStartMultiNfcUnlock: () -> Unit,
+    onReadWizardPasswordInputChanged: (String) -> Unit = {},
+    onDecryptWizardShare: () -> Unit = {},
+    onScanWizardShare: () -> Unit = {},
+    onCancelReadWizard: () -> Unit = {},
     onBreezApiKeyChanged: (String) -> Unit = {},
     onBreezNetworkChanged: (String) -> Unit = {},
     onBreezConnect: (java.io.File) -> Unit = {},
@@ -469,63 +540,110 @@ private fun ReadScreen(
         uiState.readPassword.length < MIN_PASSWORD_LENGTH
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (uiState.derivedAddresses == null) {
-            Text(
-                text = "Hold a tag to the phone on this screen. If it contains this app's encrypted message, the app will detect it automatically. If a password is already entered, the app will try it; otherwise finish typing and tap Try Password.",
-                style = MaterialTheme.typography.bodyMedium,
+        if (uiState.readWizardActive) {
+            ReadWizardPanel(
+                uiState = uiState,
+                onPasswordChanged = onReadWizardPasswordInputChanged,
+                onDecryptShare = onDecryptWizardShare,
+                onScanShare = onScanWizardShare,
+                onCancel = onCancelReadWizard
             )
-
-            PasswordField(
-                value = uiState.readPassword,
-                onValueChange = onReadPasswordChanged,
-                label = "Password",
-                enabled = inputEnabled,
-                isError = passwordTooShort,
-                supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            StatusPanel(uiState.readStatus)
+        } else if (uiState.derivedAddresses == null) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                ),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Button(
-                    onClick = onStartRead,
-                    enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
-                    modifier = Modifier.weight(1f),
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Try Password")
-                }
-                if (uiState.lastTagInfo != null) {
-                    OutlinedButton(
-                        onClick = onForgetCard,
-                        enabled = !actionsDisabled,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
+                    Text(
+                        text = "Single Tag / Direct Unlock",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Hold an encrypted tag to the phone, type its password, and tap Try Password.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    PasswordField(
+                        value = uiState.readPassword,
+                        onValueChange = onReadPasswordChanged,
+                        label = "Password",
+                        enabled = inputEnabled,
+                        isError = passwordTooShort,
+                        supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text("Forget Card")
-                    }
-                } else {
-                    OutlinedButton(
-                        onClick = onClearCard,
-                        enabled = !actionsDisabled,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Clear Card")
+                        Button(
+                            onClick = onStartRead,
+                            enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Try Password")
+                        }
+                        if (uiState.lastTagInfo != null) {
+                            OutlinedButton(
+                                onClick = onForgetCard,
+                                enabled = !actionsDisabled,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Forget Card")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onClearCard,
+                                enabled = !actionsDisabled,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Clear Card")
+                            }
+                        }
                     }
                 }
             }
 
-            Button(
-                onClick = onStartMultiNfcUnlock,
-                enabled = !actionsDisabled && uiState.readPassword.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                ),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Unlock Multi-NFC Wallet (SSS)")
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Multi-Tag SSS Vault Unlock",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = "Unlock a wallet split across multiple NFC cards. No password is required upfront.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Button(
+                        onClick = onStartMultiNfcUnlock,
+                        enabled = !actionsDisabled,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary
+                        )
+                    ) {
+                        Text("Unlock Multi-NFC Wallet (SSS)")
+                    }
+                }
             }
 
             if (uiState.pendingScanAction != null) {
@@ -542,6 +660,8 @@ private fun ReadScreen(
 
         if (uiState.derivedAddresses != null) {
             WalletPanel(
+                activeTab = activeTab,
+                onActiveTabChanged = onActiveTabChanged,
                 uiState = uiState,
                 onRefreshBalance = onRefreshBalance,
                 onSendRecipientChanged = onSendRecipientChanged,
@@ -660,174 +780,176 @@ private fun ReadScreen(
             }
         }
 
-        uiState.readMessage?.let { message ->
-            var showPrivateDetails by remember(message) { mutableStateOf(false) }
-            OutlinedCard(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+        if (activeTab != 3) {
+            uiState.readMessage?.let { message ->
+                var showPrivateDetails by remember(message) { mutableStateOf(false) }
+                OutlinedCard(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                indication = null
-                            ) { showPrivateDetails = !showPrivateDetails },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            .padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null
+                                ) { showPrivateDetails = !showPrivateDetails },
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                         ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (showPrivateDetails) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showPrivateDetails) "Hide Sensitive Details" else "Show Sensitive Details",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Show Decrypted Mnemonic & Details",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                             Icon(
-                                imageVector = if (showPrivateDetails) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showPrivateDetails) "Hide Sensitive Details" else "Show Sensitive Details",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Show Decrypted Mnemonic & Details",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                imageVector = if (showPrivateDetails) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (showPrivateDetails) "Collapse" else "Expand"
                             )
                         }
-                        Icon(
-                            imageVector = if (showPrivateDetails) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = if (showPrivateDetails) "Collapse" else "Expand"
-                        )
-                    }
 
-                    if (showPrivateDetails) {
-                        androidx.compose.material3.HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                        )
-                        if (uiState.derivedAddresses != null) {
-                            Text(
-                                text = "Decrypted Bitcoin Seed Phrase",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            val words = message.trim().split(Regex("\\s+"))
-                            SeedPhraseGrid(words = words)
-
+                        if (showPrivateDetails) {
                             androidx.compose.material3.HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
                             )
+                            if (uiState.derivedAddresses != null) {
+                                Text(
+                                    text = "Decrypted Bitcoin Seed Phrase",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                val words = message.trim().split(Regex("\\s+"))
+                                SeedPhraseGrid(words = words)
 
-                            val watchOnlyTitle = if (uiState.derivedAddressesList != null) {
-                                "Derived Watch-Only Addresses (Showing Index #${uiState.activeAddressIndex})"
-                            } else {
-                                "Derived Watch-Only Addresses"
-                            }
-                            Text(
-                                text = watchOnlyTitle,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                            uiState.derivedAddresses.forEach { (type, address) ->
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    Text(
-                                        text = type,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                androidx.compose.material3.HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                                )
+
+                                val watchOnlyTitle = if (uiState.derivedAddressesList != null) {
+                                    "Derived Watch-Only Addresses (Showing Index #${uiState.activeAddressIndex})"
+                                } else {
+                                    "Derived Watch-Only Addresses"
+                                }
+                                Text(
+                                    text = watchOnlyTitle,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                                uiState.derivedAddresses.forEach { (type, address) ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
-                                        SelectionContainer(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = address,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                                ),
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        TextButton(
-                                            onClick = {
-                                                val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                                val clip = ClipData.newPlainText("", address)
-                                                clipboard?.setPrimaryClip(clip)
-                                                Toast.makeText(context, "Address copied.", Toast.LENGTH_SHORT).show()
-                                            },
-                                            modifier = Modifier.padding(0.dp)
+                                        Text(
+                                            text = type,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                                         ) {
-                                            Text("Copy", style = MaterialTheme.typography.bodySmall)
+                                            SelectionContainer(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = address,
+                                                    style = MaterialTheme.typography.bodySmall.copy(
+                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                    ),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            TextButton(
+                                                onClick = {
+                                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                                    val clip = ClipData.newPlainText("", address)
+                                                    clipboard?.setPrimaryClip(clip)
+                                                    Toast.makeText(context, "Address copied.", Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.padding(0.dp)
+                                            ) {
+                                                Text("Copy", style = MaterialTheme.typography.bodySmall)
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            OutlinedButton(
-                                onClick = {
-                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                    val clip = ClipData.newPlainText("", message)
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        clip.description.extras = PersistableBundle().also { bundle ->
-                                            bundle.putBoolean(
-                                                android.content.ClipDescription.EXTRA_IS_SENSITIVE,
-                                                true,
-                                            )
+                                OutlinedButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                        val clip = ClipData.newPlainText("", message)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            clip.description.extras = PersistableBundle().also { bundle ->
+                                                bundle.putBoolean(
+                                                    android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                                                    true,
+                                                )
+                                            }
                                         }
-                                    }
-                                    clipboard?.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Mnemonic phrase copied.", Toast.LENGTH_SHORT).show()
-                                    clipboardClearKey += 1
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Copy Seed Phrase")
-                            }
-                        } else {
-                            Text(
-                                text = "Decrypted message",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            SelectionContainer {
+                                        clipboard?.setPrimaryClip(clip)
+                                        Toast.makeText(context, "Mnemonic phrase copied.", Toast.LENGTH_SHORT).show()
+                                        clipboardClearKey += 1
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Copy Seed Phrase")
+                                }
+                            } else {
                                 Text(
-                                    text = message,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    text = "Decrypted message",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
                                 )
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                    val clip = ClipData.newPlainText("", message)
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        clip.description.extras = PersistableBundle().also { bundle ->
-                                            bundle.putBoolean(
-                                                android.content.ClipDescription.EXTRA_IS_SENSITIVE,
-                                                true,
-                                            )
+                                SelectionContainer {
+                                    Text(
+                                        text = message,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                        val clip = ClipData.newPlainText("", message)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            clip.description.extras = PersistableBundle().also { bundle ->
+                                                bundle.putBoolean(
+                                                    android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                                                    true,
+                                                )
+                                            }
                                         }
-                                    }
-                                    clipboard?.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Message copied.", Toast.LENGTH_SHORT).show()
-                                    clipboardClearKey += 1
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Copy Message")
+                                        clipboard?.setPrimaryClip(clip)
+                                        Toast.makeText(context, "Message copied.", Toast.LENGTH_SHORT).show()
+                                        clipboardClearKey += 1
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Copy Message")
+                                }
                             }
                         }
                     }
@@ -861,7 +983,18 @@ private fun WriteScreen(
     onGenerateEmergencyMnemonic: () -> Unit = {},
     onUseGeneratedEmergencyMnemonic: () -> Unit = {},
     onClearGeneratedEmergencyMnemonic: () -> Unit = {},
+    onWizardPasswordChanged: (String) -> Unit = {},
+    onWizardPasswordConfirmationChanged: (String) -> Unit = {},
+    onWizardSecondaryMnemonicChanged: (String) -> Unit = {},
+    onWizardSecondaryPasswordChanged: (String) -> Unit = {},
+    onWizardSecondaryPasswordConfirmationChanged: (String) -> Unit = {},
+    onGenerateWizardSecondaryMnemonic: () -> Unit = {},
+    onUseGeneratedWizardSecondaryMnemonic: () -> Unit = {},
+    onClearGeneratedWizardSecondaryMnemonic: () -> Unit = {},
+    onProceedWizardWrite: () -> Unit = {},
+    onCancelWizard: () -> Unit = {},
 ) {
+    var generatedMnemonicVisible by rememberSaveable { mutableStateOf(false) }
     val actionsDisabled = !uiState.canScanNfc || uiState.isProcessing || uiState.pendingScanAction != null
     val inputEnabled = !uiState.isProcessing && uiState.pendingScanAction == null
     val writePasswordTooShort = uiState.writePassword.isNotEmpty() &&
@@ -896,314 +1029,210 @@ private fun WriteScreen(
     val context = LocalContext.current
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(
-            text = "Write one encrypted plain-text message per tag. Existing app data will be overwritten if the encrypted message fits.",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Seed Phrase:",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
+        if (uiState.writeWizardActive) {
+            WriteWizardPanel(
+                uiState = uiState,
+                onWizardPasswordChanged = onWizardPasswordChanged,
+                onWizardPasswordConfirmationChanged = onWizardPasswordConfirmationChanged,
+                onWizardSecondaryMnemonicChanged = onWizardSecondaryMnemonicChanged,
+                onWizardSecondaryPasswordChanged = onWizardSecondaryPasswordChanged,
+                onWizardSecondaryPasswordConfirmationChanged = onWizardSecondaryPasswordConfirmationChanged,
+                onGenerateWizardSecondaryMnemonic = onGenerateWizardSecondaryMnemonic,
+                onUseGeneratedWizardSecondaryMnemonic = onUseGeneratedWizardSecondaryMnemonic,
+                onClearGeneratedWizardSecondaryMnemonic = onClearGeneratedWizardSecondaryMnemonic,
+                onProceedWizardWrite = onProceedWizardWrite,
+                onCancelWizard = onCancelWizard
             )
-            OutlinedButton(
-                onClick = { onGenerateMnemonic(12) },
-                enabled = inputEnabled
-            ) {
-                Text("12 words")
-            }
-            OutlinedButton(
-                onClick = { onGenerateMnemonic(24) },
-                enabled = inputEnabled
-            ) {
-                Text("24 words")
-            }
-        }
+        } else {
+            Text(
+                text = "Write one encrypted plain-text message per tag. Existing app data will be overwritten if the encrypted message fits.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
 
-        if (uiState.generatedMnemonic != null) {
-            val generatedWords = uiState.generatedMnemonic.trim().split(Regex("\\s+"))
-            OutlinedCard(
-                colors = CardDefaults.outlinedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "Generated Bitcoin Seed Phrase",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Keep this phrase secret! This is the master key to your Bitcoin wallet.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    SeedPhraseGrid(words = generatedWords)
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = onUseGeneratedMnemonic,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Use Seed Phrase")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                val clip = ClipData.newPlainText("", uiState.generatedMnemonic)
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    clip.description.extras = PersistableBundle().also { bundle ->
-                                        bundle.putBoolean(
-                                            android.content.ClipDescription.EXTRA_IS_SENSITIVE,
-                                            true,
-                                        )
-                                    }
-                                }
-                                clipboard?.setPrimaryClip(clip)
-                                Toast.makeText(context, "Mnemonic copied to clipboard.", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Copy")
-                        }
-                        TextButton(
-                            onClick = onClearGeneratedMnemonic
-                        ) {
-                            Text("Close")
-                        }
-                    }
-                }
-            }
-        }
-
-        val passwordStrength = when {
-            uiState.writePassword.isBlank() -> null
-            uiState.writePassword.length < 10 -> "Weak"
-            uiState.writePassword.length < 16 -> "Good"
-            else -> "Strong Passphrase"
-        }
-        val passwordStrengthColor = when (passwordStrength) {
-            "Weak" -> Color(0xFFE53935)
-            "Good" -> Color(0xFFFDD835)
-            "Strong Passphrase" -> Color(0xFF43A047)
-            else -> Color.Transparent
-        }
-
-        PasswordField(
-            value = uiState.writePassword,
-            onValueChange = onWritePasswordChanged,
-            label = "Password",
-            enabled = inputEnabled,
-            isError = writePasswordTooShort,
-            supportingText = if (writePasswordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null,
-        )
-
-        if (passwordStrength != null) {
             Row(
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(horizontal = 4.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Password Strength: ", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    text = passwordStrength,
-                    color = passwordStrengthColor,
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                if (passwordStrength == "Weak") {
-                    Text(
-                        text = " (Encourage using a long passphrase of 4+ words)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Button(
+                    onClick = { onGenerateMnemonic(12) },
+                    enabled = inputEnabled,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("12 words")
+                }
+                Button(
+                    onClick = { onGenerateMnemonic(24) },
+                    enabled = inputEnabled,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("24 words")
                 }
             }
-        }
 
-        PasswordField(
-            value = uiState.writePasswordConfirmation,
-            onValueChange = onWritePasswordConfirmationChanged,
-            label = "Confirm password",
-            enabled = inputEnabled,
-            isError = passwordsMismatch,
-            supportingText = if (passwordsMismatch) {
-                "Passwords must match exactly."
-            } else {
-                null
-            },
-        )
-
-
-
-        if (!uiState.writeIsMultiNfcSplit) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "Number of Backup Tags to Write:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+            if (uiState.generatedMnemonic != null) {
+                val generatedWords = uiState.generatedMnemonic.trim().split(Regex("\\s+"))
+                OutlinedCard(
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    (1..5).forEach { count ->
-                        val isSelected = uiState.writeBackupsCount == count
-                        OutlinedButton(
-                            onClick = { onWriteBackupsCountChanged(count) },
-                            enabled = inputEnabled,
-                            colors = if (isSelected) {
-                                ButtonDefaults.outlinedButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            } else {
-                                ButtonDefaults.outlinedButtonColors()
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                         ) {
-                            Text(count.toString())
+                            Text(
+                                text = "Generated Bitcoin Seed Phrase",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            IconButton(onClick = { generatedMnemonicVisible = !generatedMnemonicVisible }) {
+                                Icon(
+                                    imageVector = if (generatedMnemonicVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (generatedMnemonicVisible) "Hide seed phrase" else "Show seed phrase",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Keep this phrase secret! This is the master key to your Bitcoin wallet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        SeedPhraseGrid(words = generatedWords, obscured = !generatedMnemonicVisible)
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = onUseGeneratedMnemonic,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Use Seed Phrase")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                    val clip = ClipData.newPlainText("", uiState.generatedMnemonic)
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        clip.description.extras = PersistableBundle().also { bundle ->
+                                            bundle.putBoolean(
+                                                android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                                                true,
+                                            )
+                                        }
+                                    }
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Mnemonic copied to clipboard.", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Copy")
+                            }
+                            TextButton(
+                                onClick = onClearGeneratedMnemonic
+                            ) {
+                                Text("Close")
+                            }
                         }
                     }
                 }
-                Text(
-                    text = "Allows writing identical, encrypted physical copies using the same password for redundancy.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
-        }
 
-        OutlinedTextField(
-            value = uiState.writeMessage,
-            onValueChange = onWriteMessageChanged,
-            label = { Text("Message") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = inputEnabled,
-            minLines = 6,
-            maxLines = 10,
-            supportingText = {
-                Text(characterSupportingText)
-            },
-        )
+            var messageVisible by rememberSaveable { mutableStateOf(false) }
 
-        if ((words.size == 12 || words.size == 24) && !isWriteMnemonic && !isPrivateKey) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                ),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            OutlinedTextField(
+                value = uiState.writeMessage,
+                onValueChange = onWriteMessageChanged,
+                label = { Text("Message / Seed Phrase") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = inputEnabled,
+                visualTransformation = if (messageVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                minLines = 6,
+                maxLines = 10,
+                supportingText = {
+                    Text(characterSupportingText)
+                },
+                trailingIcon = {
+                    val icon = if (messageVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
+                    val description = if (messageVisible) "Hide message" else "Show message"
+                    IconButton(
+                        onClick = { messageVisible = !messageVisible },
+                        enabled = inputEnabled,
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = description,
+                        )
+                    }
+                }
+            )
+
+            if ((words.size == 12 || words.size == 24) && !isWriteMnemonic && !isPrivateKey) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Error,
-                        contentDescription = "Mnemonic Validation Error",
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                    Column {
-                        Text(
-                            text = "Invalid BIP-39 Seed Phrase",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Warning",
+                            tint = MaterialTheme.colorScheme.error
                         )
                         Text(
-                            text = "You entered ${words.size} words, but validation failed: ${mnemonicValidationError ?: "unknown error"}. It will be written as raw plain text and will likely exceed your NFC tag's capacity.",
-                            style = MaterialTheme.typography.bodySmall
+                            text = "Checksum verification failed! $mnemonicValidationError",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
-        }
 
-        if (isNsecKey) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFFEDE7F6), // Light purple background
-                    contentColor = Color(0xFF4527A0)   // Deep purple text
-                ),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            if (isNsecKey) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "Nostr Key",
-                        tint = Color(0xFF4527A0)
-                    )
-                    Column {
-                        Text(
-                            text = "Nostr Identity Key (nsec) Detected",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Info",
+                            tint = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "Your Nostr Taproot Bitcoin address will be shown after scanning your tag. No HD seed phrase — only one address is derived.",
-                            style = MaterialTheme.typography.bodySmall
+                            text = "Valid Nostr Private Key (nsec) detected.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
-        }
 
-        if (isPrivateKey) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFFE8F5E9), // Light green background
-                    contentColor = Color(0xFF2E7D32) // Dark green text
-                ),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Check,
-                        contentDescription = "Private Key Valid",
-                        tint = Color(0xFF2E7D32)
-                    )
-                    Column {
-                        Text(
-                            text = "Valid Private Key Format Detected",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "This private key (WIF/Hex/Extended) will be written securely to your tag.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-            }
-        }
-
-        if (isWriteMnemonic) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier
@@ -1302,294 +1331,185 @@ private fun WriteScreen(
                     }
                 }
             }
-        }
 
-        if (isWriteMnemonic) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Checkbox(
-                    checked = uiState.writeIsDuressEnabled,
-                    onCheckedChange = onWriteIsDuressEnabledChanged,
-                    enabled = inputEnabled
-                )
-                Column {
-                    Text(
-                        text = "Enable Emergency/Duress Wallet",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold
+            if (isWriteMnemonic) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Checkbox(
+                        checked = uiState.writeIsDuressEnabled,
+                        onCheckedChange = onWriteIsDuressEnabledChanged,
+                        enabled = inputEnabled
                     )
+                    Column {
+                        Text(
+                            text = "Enable Secondary Wallets",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Allows configuring an independent secondary spend wallet for each card in the wizard setup.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (!uiState.writeIsMultiNfcSplit) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "Protects against physical coercion. Allows typing a secondary password to unlock a separate wallet.",
+                        text = "Number of Backup Tags to Write:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        (1..5).forEach { count ->
+                            val isSelected = uiState.writeBackupsCount == count
+                            OutlinedButton(
+                                onClick = { onWriteBackupsCountChanged(count) },
+                                enabled = inputEnabled,
+                                colors = if (isSelected) {
+                                    ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                } else {
+                                    ButtonDefaults.outlinedButtonColors()
+                                },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                            ) {
+                                Text(count.toString())
+                            }
+                        }
+                    }
+                    Text(
+                        text = "Allows writing identical, encrypted physical copies using the same password for redundancy.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-        }
 
-        if (isWriteMnemonic && uiState.writeIsDuressEnabled) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            OutlinedCard {
                 Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
-                        text = "Emergency/Duress Wallet Setup",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "Size estimate",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                    ) {
+                    if (isWriteMnemonic) {
                         Text(
-                            text = "Emergency Seed:",
+                            text = "BIP-39 Mnemonic detected: ${words.size} words",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                        OutlinedButton(
-                            onClick = onGenerateEmergencyMnemonic,
-                            enabled = inputEnabled
-                        ) {
-                            Text("Generate 12 words")
-                        }
-                    }
-
-                    if (uiState.generatedEmergencyMnemonic != null) {
-                        val emergencyWords = uiState.generatedEmergencyMnemonic.trim().split(Regex("\\s+"))
-                        OutlinedCard(
-                            colors = CardDefaults.outlinedCardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            ),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text(
-                                    text = "Generated Emergency Seed Phrase",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                SeedPhraseGrid(words = emergencyWords)
-                                
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Button(
-                                        onClick = onUseGeneratedEmergencyMnemonic,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Use Seed Phrase")
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            val clipboard = context.getSystemService(ClipboardManager::class.java)
-                                            val clip = ClipData.newPlainText("", uiState.generatedEmergencyMnemonic)
-                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                                clip.description.extras = PersistableBundle().also { bundle ->
-                                                    bundle.putBoolean(
-                                                        android.content.ClipDescription.EXTRA_IS_SENSITIVE,
-                                                        true,
-                                                    )
-                                                }
-                                            }
-                                            clipboard?.setPrimaryClip(clip)
-                                            Toast.makeText(context, "Emergency Mnemonic copied.", Toast.LENGTH_SHORT).show()
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Copy")
-                                    }
-                                    TextButton(
-                                        onClick = onClearGeneratedEmergencyMnemonic
-                                    ) {
-                                        Text("Close")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    val emergencyPasswordTooShort = uiState.writeEmergencyPassword.isNotEmpty() &&
-                        uiState.writeEmergencyPassword.length < MIN_PASSWORD_LENGTH
-                    val emergencyPasswordsMismatch = uiState.writeEmergencyPasswordConfirmation.isNotEmpty() &&
-                        uiState.writeEmergencyPassword != uiState.writeEmergencyPasswordConfirmation
-                    val mainAndEmergencySame = uiState.writeEmergencyPassword.isNotEmpty() &&
-                        uiState.writePassword == uiState.writeEmergencyPassword
-
-                    PasswordField(
-                        value = uiState.writeEmergencyPassword,
-                        onValueChange = onWriteEmergencyPasswordChanged,
-                        label = "Emergency Password",
-                        enabled = inputEnabled,
-                        isError = emergencyPasswordTooShort || mainAndEmergencySame,
-                        supportingText = when {
-                            emergencyPasswordTooShort -> "At least $MIN_PASSWORD_LENGTH characters required."
-                            mainAndEmergencySame -> "Emergency password must be different from Main password."
-                            else -> null
-                        }
-                    )
-
-                    PasswordField(
-                        value = uiState.writeEmergencyPasswordConfirmation,
-                        onValueChange = onWriteEmergencyPasswordConfirmationChanged,
-                        label = "Confirm Emergency Password",
-                        enabled = inputEnabled,
-                        isError = emergencyPasswordsMismatch,
-                        supportingText = if (emergencyPasswordsMismatch) "Passwords must match exactly." else null
-                    )
-
-                    OutlinedTextField(
-                        value = uiState.writeEmergencyMessage,
-                        onValueChange = onWriteEmergencyMessageChanged,
-                        label = { Text("Emergency Seed Phrase / Message") },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = inputEnabled,
-                        minLines = 4,
-                        maxLines = 6
-                    )
-                }
-            }
-        }
-
-        OutlinedCard {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = "Size estimate",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (isWriteMnemonic) {
-                    Text(
-                        text = "BIP-39 Mnemonic detected: ${words.size} words",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = "Compressed to binary entropy before encryption.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (words.size == 12 || words.size == 24) {
-                    Text(
-                        text = "Invalid BIP-39 Mnemonic: ${words.size} words",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Text(
-                        text = "Warning: Validation failed (spelling error or checksum mismatch). It will NOT be compressed and will be written as raw plain text, which will likely exceed your tag capacity.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                Text(
-                    text = "Character count: $plainTextCharacters characters",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    text = "Encrypted NDEF size: ${uiState.estimatedNdefWriteSizeBytes} bytes",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    text = "Encrypted raw MIFARE Classic size: ${uiState.estimatedMifareClassicWriteSizeBytes} bytes",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (lastCapacity != null) {
-                    if (maxCharactersForLastTag != null) {
-                        val backendLabel = lastBackend?.label ?: "unknown"
                         Text(
-                            text = "The last scanned $backendLabel tag can hold up to ~$maxCharactersForLastTag ASCII characters.",
+                            text = "Compressed to binary entropy before encryption.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (words.size == 12 || words.size == 24) {
+                        Text(
+                            text = "Invalid BIP-39 Mnemonic: ${words.size} words",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            text = "Warning: Validation failed (spelling error or checksum mismatch). It will NOT be compressed and will be written as raw plain text, which will likely exceed your tag capacity.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Text(
+                        text = "Character count: $plainTextCharacters characters",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "Encrypted NDEF size: ${uiState.estimatedNdefWriteSizeBytes} bytes",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "Encrypted raw MIFARE Classic size: ${uiState.estimatedMifareClassicWriteSizeBytes} bytes",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (lastCapacity != null) {
+                        if (maxCharactersForLastTag != null) {
+                            val backendLabel = lastBackend?.label ?: "unknown"
+                            Text(
+                                text = "The last scanned $backendLabel tag can hold up to ~$maxCharactersForLastTag ASCII characters.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (uiState.writeMessage.isNotBlank()) {
+                            val estimateForLastTag = when (lastBackend) {
+                                StorageBackend.MifareClassicRaw -> uiState.estimatedMifareClassicWriteSizeBytes
+                                StorageBackend.Ndef -> uiState.estimatedNdefWriteSizeBytes
+                                StorageBackend.Unknown, null -> null
+                            }
+                            val backendLabel = lastBackend?.label ?: "unknown"
+                            val fits = estimateForLastTag != null && estimateForLastTag <= lastCapacity
+                            val fitText = if (fits) "fits" else "does not fit"
+                            Text(
+                                text = if (estimateForLastTag == null) {
+                                    "The last scanned tag did not expose a recognized storage backend."
+                                } else {
+                                    "Against the last scanned $backendLabel tag: $fitText ($lastCapacity bytes available)."
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (estimateForLastTag == null) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else if (fits) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "Final fit is checked again when you scan a tag.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (uiState.writeMessage.isNotBlank()) {
-                        val estimateForLastTag = when (lastBackend) {
-                            StorageBackend.MifareClassicRaw -> uiState.estimatedMifareClassicWriteSizeBytes
-                            StorageBackend.Ndef -> uiState.estimatedNdefWriteSizeBytes
-                            StorageBackend.Unknown, null -> null
-                        }
-                        val backendLabel = lastBackend?.label ?: "unknown"
-                        val fits = estimateForLastTag != null && estimateForLastTag <= lastCapacity
-                        val fitText = if (fits) "fits" else "does not fit"
-                        Text(
-                            text = if (estimateForLastTag == null) {
-                                "The last scanned tag did not expose a recognized storage backend."
-                            } else {
-                                "Against the last scanned $backendLabel tag: $fitText ($lastCapacity bytes available)."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (estimateForLastTag == null) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else if (fits) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.error
-                            },
-                        )
-                    }
-                } else {
-                    Text(
-                        text = "Final fit is checked again when you scan a tag.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
-        }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Button(
-                onClick = onStartWrite,
-                enabled = !actionsDisabled &&
-                    uiState.writePassword.isNotBlank() &&
-                    !passwordsMismatch &&
-                    uiState.writeMessage.isNotBlank() &&
-                    (!uiState.writeIsDuressEnabled || (
-                        uiState.writeEmergencyPassword.isNotBlank() &&
-                        uiState.writeEmergencyPassword == uiState.writeEmergencyPasswordConfirmation &&
-                        uiState.writeEmergencyMessage.isNotBlank() &&
-                        uiState.writePassword != uiState.writeEmergencyPassword
-                    )),
-                modifier = Modifier.weight(1f),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Write to Card")
-            }
-            OutlinedButton(
-                onClick = onClearCard,
-                enabled = !actionsDisabled,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Clear Card")
+                Button(
+                    onClick = onStartWrite,
+                    enabled = !actionsDisabled && uiState.writeMessage.isNotBlank(),
+                    modifier = Modifier.weight(1.5f),
+                ) {
+                    Text("Begin Backup Setup")
+                }
+                OutlinedButton(
+                    onClick = onClearCard,
+                    enabled = !actionsDisabled,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Clear Card")
+                }
             }
         }
 
@@ -1646,6 +1566,436 @@ private fun PasswordField(
             { Text(support) }
         },
     )
+}
+
+
+@Composable
+private fun ReadWizardPanel(
+    uiState: MainUiState,
+    onPasswordChanged: (String) -> Unit,
+    onDecryptShare: () -> Unit,
+    onScanShare: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val index = uiState.readWizardIndex
+    val payloadsScanned = uiState.readWizardPayloads.size
+    val isScanned = payloadsScanned > index
+    val isProcessing = uiState.readWizardIsProcessing
+    val inputEnabled = !isProcessing && uiState.pendingScanAction == null
+
+    val passwordTooShort = uiState.readWizardPasswordInput.isNotEmpty() &&
+        uiState.readWizardPasswordInput.length < MIN_PASSWORD_LENGTH
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "SSS Vault Unlock Wizard",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Step 1: Scan each required card.\nStep 2: Enter its decryption password.\nGathered shares: ${uiState.readWizardDecryptedShares.size} of ${if (uiState.readWizardDecryptedShares.isNotEmpty()) uiState.readWizardK else "?"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Text(
+                text = "Card ${index + 1} Configuration",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.secondary
+            )
+
+            if (!isScanned) {
+                Text(
+                    text = "Ready to scan. Tap 'Scan Card ${index + 1}' and hold Card ${index + 1} against the back of your phone.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Button(
+                    onClick = onScanShare,
+                    enabled = inputEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Scan Card ${index + 1}")
+                }
+            } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Scanned",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Card ${index + 1} payload loaded successfully.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                PasswordField(
+                    value = uiState.readWizardPasswordInput,
+                    onValueChange = onPasswordChanged,
+                    label = "Decryption Password for Card ${index + 1}",
+                    enabled = inputEnabled,
+                    isError = passwordTooShort,
+                    supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null
+                )
+
+                Button(
+                    onClick = onDecryptShare,
+                    enabled = inputEnabled && uiState.readWizardPasswordInput.isNotEmpty() && !passwordTooShort,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Decrypting...")
+                    } else {
+                        Text("Decrypt Card ${index + 1}")
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    enabled = inputEnabled,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Cancel Unlock")
+                }
+
+                if (isScanned) {
+                    OutlinedButton(
+                        onClick = onScanShare,
+                        enabled = inputEnabled,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Rescan Card")
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun WriteWizardPanel(
+    uiState: MainUiState,
+    onWizardPasswordChanged: (String) -> Unit,
+    onWizardPasswordConfirmationChanged: (String) -> Unit,
+    onWizardSecondaryMnemonicChanged: (String) -> Unit,
+    onWizardSecondaryPasswordChanged: (String) -> Unit,
+    onWizardSecondaryPasswordConfirmationChanged: (String) -> Unit,
+    onGenerateWizardSecondaryMnemonic: () -> Unit,
+    onUseGeneratedWizardSecondaryMnemonic: () -> Unit,
+    onClearGeneratedWizardSecondaryMnemonic: () -> Unit,
+    onProceedWizardWrite: () -> Unit,
+    onCancelWizard: () -> Unit
+) {
+    val index = uiState.writeWizardIndex
+    val total = uiState.writeWizardRawShares.size
+    val isProcessing = uiState.writeWizardIsProcessing
+    val inputEnabled = !isProcessing && uiState.pendingScanAction == null
+
+    val passwordTooShort = uiState.writeWizardPassword.isNotEmpty() &&
+        uiState.writeWizardPassword.length < MIN_PASSWORD_LENGTH
+    val passwordsMismatch = uiState.writeWizardPasswordConfirmation.isNotEmpty() &&
+        uiState.writeWizardPassword != uiState.writeWizardPasswordConfirmation
+
+    val context = LocalContext.current
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Backup Wizard: Card ${index + 1} of $total",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = if (uiState.writeWizardIsShare) {
+                        "Each physical card in your SSS threshold configuration can have its own independent decryption password. If multiple people are setting up this wallet, pass the phone to User ${index + 1} to enter their private password."
+                    } else {
+                        "Configuring backup card ${index + 1} of $total. Enter a password to encrypt this tag."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Card Password Fields
+        PasswordField(
+            value = uiState.writeWizardPassword,
+            onValueChange = onWizardPasswordChanged,
+            label = "Card Password",
+            enabled = inputEnabled,
+            isError = passwordTooShort,
+            supportingText = if (passwordTooShort) "At least $MIN_PASSWORD_LENGTH characters required." else null
+        )
+
+        PasswordField(
+            value = uiState.writeWizardPasswordConfirmation,
+            onValueChange = onWizardPasswordConfirmationChanged,
+            label = "Confirm Card Password",
+            enabled = inputEnabled,
+            isError = passwordsMismatch,
+            supportingText = if (passwordsMismatch) "Passwords must match exactly." else null
+        )
+
+        // Secondary Wallet Section (only if enabled on main screen)
+        if (uiState.writeIsDuressEnabled) {
+            var secondaryMnemonicVisible by rememberSaveable { mutableStateOf(false) }
+            var generatedSecMnemonicVisible by rememberSaveable { mutableStateOf(false) }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Independent Secondary Wallet",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Each card can optionally host an independent secondary decoy wallet. Enter a decoy seed phrase and decoy password below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Secondary Seed Phrase:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedButton(
+                            onClick = onGenerateWizardSecondaryMnemonic,
+                            enabled = inputEnabled
+                        ) {
+                            Text("Generate 12 words")
+                        }
+                    }
+
+                    if (uiState.writeWizardGeneratedSecondaryMnemonic != null) {
+                        val emergencyWords = uiState.writeWizardGeneratedSecondaryMnemonic.trim().split(Regex("\\s+"))
+                        OutlinedCard(
+                            colors = CardDefaults.outlinedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            ),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Generated Secondary Seed Phrase",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(onClick = { generatedSecMnemonicVisible = !generatedSecMnemonicVisible }) {
+                                        Icon(
+                                            imageVector = if (generatedSecMnemonicVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                            contentDescription = if (generatedSecMnemonicVisible) "Hide seed phrase" else "Show seed phrase",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                SeedPhraseGrid(words = emergencyWords, obscured = !generatedSecMnemonicVisible)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Button(
+                                        onClick = onUseGeneratedWizardSecondaryMnemonic,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Use Seed Phrase")
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(ClipboardManager::class.java)
+                                            val clip = ClipData.newPlainText("", uiState.writeWizardGeneratedSecondaryMnemonic)
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                                clip.description.extras = PersistableBundle().also { bundle ->
+                                                    bundle.putBoolean(
+                                                        android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                                                        true,
+                                                    )
+                                                }
+                                            }
+                                            clipboard?.setPrimaryClip(clip)
+                                            Toast.makeText(context, "Secondary Mnemonic copied.", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Copy")
+                                    }
+                                    TextButton(
+                                        onClick = onClearGeneratedWizardSecondaryMnemonic
+                                    ) {
+                                        Text("Close")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    val secPasswordTooShort = uiState.writeWizardSecondaryPassword.isNotEmpty() &&
+                        uiState.writeWizardSecondaryPassword.length < MIN_PASSWORD_LENGTH
+                    val secPasswordsMismatch = uiState.writeWizardSecondaryPasswordConfirmation.isNotEmpty() &&
+                        uiState.writeWizardSecondaryPassword != uiState.writeWizardSecondaryPasswordConfirmation
+                    val mainAndSecSame = uiState.writeWizardSecondaryPassword.isNotEmpty() &&
+                        uiState.writeWizardPassword == uiState.writeWizardSecondaryPassword
+
+                    PasswordField(
+                        value = uiState.writeWizardSecondaryPassword,
+                        onValueChange = onWizardSecondaryPasswordChanged,
+                        label = "Secondary Password",
+                        enabled = inputEnabled,
+                        isError = secPasswordTooShort || mainAndSecSame,
+                        supportingText = when {
+                            secPasswordTooShort -> "At least $MIN_PASSWORD_LENGTH characters required."
+                            mainAndSecSame -> "Secondary password must be different from Main password."
+                            else -> null
+                        }
+                    )
+
+                    PasswordField(
+                        value = uiState.writeWizardSecondaryPasswordConfirmation,
+                        onValueChange = onWizardSecondaryPasswordConfirmationChanged,
+                        label = "Confirm Secondary Password",
+                        enabled = inputEnabled,
+                        isError = secPasswordsMismatch,
+                        supportingText = if (secPasswordsMismatch) "Passwords must match exactly." else null
+                    )
+
+                    OutlinedTextField(
+                        value = uiState.writeWizardSecondaryMnemonic,
+                        onValueChange = onWizardSecondaryMnemonicChanged,
+                        label = { Text("Secondary Seed Phrase / Message") },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = inputEnabled,
+                        visualTransformation = if (secondaryMnemonicVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        minLines = 4,
+                        maxLines = 6,
+                        trailingIcon = {
+                            val icon = if (secondaryMnemonicVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
+                            val desc = if (secondaryMnemonicVisible) "Hide secondary mnemonic" else "Show secondary mnemonic"
+                            IconButton(
+                                onClick = { secondaryMnemonicVisible = !secondaryMnemonicVisible },
+                                enabled = inputEnabled
+                            ) {
+                                Icon(imageVector = icon, contentDescription = desc)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
+        // Wizard Actions
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = onCancelWizard,
+                enabled = inputEnabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Cancel Backup")
+            }
+
+            Button(
+                onClick = onProceedWizardWrite,
+                enabled = inputEnabled && uiState.writeWizardPassword.isNotEmpty() && uiState.writeWizardPasswordConfirmation.isNotEmpty(),
+                modifier = Modifier.weight(1.5f)
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Encrypting...")
+                } else {
+                    Text("Encrypt & Write Card")
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1741,7 +2091,7 @@ private fun TagSummaryPanel(tagInfo: TagInfo) {
 }
 
 @Composable
-private fun SeedPhraseGrid(words: List<String>, modifier: Modifier = Modifier) {
+private fun SeedPhraseGrid(words: List<String>, obscured: Boolean = false, modifier: Modifier = Modifier) {
     val columnCount = 2
     val itemsPerColumn = (words.size + columnCount - 1) / columnCount
     Row(
@@ -1771,7 +2121,7 @@ private fun SeedPhraseGrid(words: List<String>, modifier: Modifier = Modifier) {
                                 modifier = Modifier.width(28.dp)
                             )
                             Text(
-                                text = words[index],
+                                text = if (obscured) "•••••" else words[index],
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -1787,6 +2137,8 @@ private fun SeedPhraseGrid(words: List<String>, modifier: Modifier = Modifier) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WalletPanel(
+    activeTab: Int,
+    onActiveTabChanged: (Int) -> Unit,
     uiState: MainUiState,
     onRefreshBalance: () -> Unit,
     onSendRecipientChanged: (String) -> Unit,
@@ -1835,7 +2187,14 @@ private fun WalletPanel(
     onToggleAutoSignNipEncrypt: (Boolean) -> Unit,
     onToggleAutoSignNipDecrypt: (Boolean) -> Unit
 ) {
-    var activeTab by remember { mutableIntStateOf(0) } // 0: On-chain, 1: Nostr, 2: eCash
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val browserHeight = remember(configuration.screenHeightDp) {
+        (configuration.screenHeightDp - 360).coerceAtLeast(280).dp
+    }
+    var hasBrowserBeenVisited by remember { mutableStateOf(false) }
+    if (activeTab == 3) {
+        hasBrowserBeenVisited = true
+    }
 
     Card(
         colors = CardDefaults.cardColors(
@@ -1847,39 +2206,20 @@ private fun WalletPanel(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Tab Switcher and Close Button Row
+            // Close button and Title Row (above tabs)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TabRow(
-                    selectedTabIndex = activeTab,
-                    containerColor = Color.Transparent,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f),
-                    divider = { Spacer(modifier = Modifier.height(0.dp)) }
-                ) {
-                    Tab(
-                        selected = activeTab == 0,
-                        onClick = { activeTab = 0 },
-                        text = { Text("On-Chain", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
-                    )
-                    Tab(
-                        selected = activeTab == 1,
-                        onClick = { activeTab = 1 },
-                        text = { Text("Nostr", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
-                    )
-                    Tab(
-                        selected = activeTab == 2,
-                        onClick = { activeTab = 2 },
-                        text = { Text("eCash", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
-                    )
-                }
-                
+                Text(
+                    text = "Wallet Dashboard",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 IconButton(
-                    onClick = onCloseWallet,
-                    modifier = Modifier.padding(start = 8.dp)
+                    onClick = onCloseWallet
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -1887,6 +2227,36 @@ private fun WalletPanel(
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
+            }
+
+            // Tab Switcher Row (unrestricted full-width!)
+            TabRow(
+                selectedTabIndex = activeTab,
+                containerColor = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth(),
+                divider = { Spacer(modifier = Modifier.height(0.dp)) }
+            ) {
+                Tab(
+                    selected = activeTab == 0,
+                    onClick = { onActiveTabChanged(0) },
+                    text = { Text("On-Chain", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                )
+                Tab(
+                    selected = activeTab == 1,
+                    onClick = { onActiveTabChanged(1) },
+                    text = { Text("Nostr", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                )
+                Tab(
+                    selected = activeTab == 2,
+                    onClick = { onActiveTabChanged(2) },
+                    text = { Text("eCash", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                )
+                Tab(
+                    selected = activeTab == 3,
+                    onClick = { onActiveTabChanged(3) },
+                    text = { Text("Browser", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
+                )
             }
 
             if (activeTab == 0) {
@@ -2084,7 +2454,9 @@ private fun WalletPanel(
                 }
 
                 // Coin Control Panel
-                if (uiState.activeAddressType != "Silent Payment (BIP-352)" && uiState.activeAddressType != "Nostr Taproot") {
+                if (uiState.activeAddressType != "Silent Payment (BIP-352)" &&
+                    uiState.activeAddressType != "Nostr Taproot" &&
+                    uiState.activeAddressType != "Nostr Taproot (nsec)") {
                     val utxos = uiState.walletUtxos ?: emptyList()
                     var coinControlExpanded by remember { mutableStateOf(false) }
 
@@ -2309,6 +2681,19 @@ private fun WalletPanel(
                     onClearCashuError = onClearCashuError,
                     onStartQrScan = onStartQrScan
                 )
+            }
+
+            if (hasBrowserBeenVisited) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (activeTab == 3) browserHeight else 0.dp)
+                ) {
+                    NostrBrowserSection(
+                        uiState = uiState,
+                        browserHeight = browserHeight
+                    )
+                }
             }
         }
     }
@@ -3736,14 +4121,11 @@ fun NfcScanDialog(
                 "Decrypting NFC Wallet" to "Hold your encrypted NFC tag against the back of your phone to unlock the wallet."
             }
             is PendingScanAction.Write -> {
-                if (action.targetCount > 1) {
-                    "Writing Backup Tag" to "Hold backup tag ${action.currentIndex + 1} of ${action.targetCount} against the back of your phone to write this encrypted backup."
+                if (uiState.writeWizardActive) {
+                    "Writing Backup Tag" to "Hold card ${uiState.writeWizardIndex + 1} of ${uiState.writeWizardRawShares.size} against the back of your phone to write this encrypted backup."
                 } else {
                     "Writing NFC Wallet" to "Hold tag against the back of your phone to write the encrypted backup."
                 }
-            }
-            is PendingScanAction.WriteShare -> {
-                "Writing SSS Split Share" to "Hold SSS card ${action.currentIndex + 1} of ${action.shares.size} against the back of your phone to write this key share."
             }
             is PendingScanAction.ReadShare -> {
                 val gatheredCount = action.gathered.size
@@ -3844,5 +4226,630 @@ fun NfcScanDialog(
                 }
             }
         }
+    }
+}
+
+// Nostr Browser Web Interfaces and Request Models
+private data class BrowserRequest(
+    val id: String,
+    val type: String,
+    val detail: String,
+    val onResponse: (String?) -> Unit
+)
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun NostrBrowserSection(
+    uiState: MainUiState,
+    browserHeight: androidx.compose.ui.unit.Dp
+) {
+    var urlInput by remember { mutableStateOf(TextFieldValue("https://mynostrspace.com/")) }
+    var showUrlDialog by remember { mutableStateOf(false) }
+    var tempUrlInput by remember { mutableStateOf("") }
+    var webViewInstance by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var activeRequest by remember { mutableStateOf<BrowserRequest?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(browserHeight),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Navigation / URL Input Bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = { webViewInstance?.goBack() },
+                enabled = webViewInstance?.canGoBack() == true
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = { webViewInstance?.goForward() },
+                enabled = webViewInstance?.canGoForward() == true
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowForward,
+                    contentDescription = "Forward",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = { webViewInstance?.reload() }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Reload",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable {
+                        tempUrlInput = urlInput.text
+                        showUrlDialog = true
+                    }
+            ) {
+                OutlinedTextField(
+                    value = urlInput,
+                    onValueChange = {},
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    singleLine = true,
+                    enabled = false,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        disabledTextColor = MaterialTheme.colorScheme.onSurface,
+                        disabledBorderColor = MaterialTheme.colorScheme.outline,
+                        disabledContainerColor = Color.Transparent
+                    )
+                )
+            }
+            Button(
+                onClick = {
+                    tempUrlInput = urlInput.text
+                    showUrlDialog = true
+                }
+            ) {
+                Text("Edit", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
+        // WebView Container
+        AndroidView(
+            factory = { ctx ->
+                val injectedJs = """
+                    (function() {
+                        if (window.nostr) return;
+                        window.nostr = {
+                            getPublicKey: function() {
+                                return new Promise((resolve, reject) => {
+                                    var pubkey = AndroidNostr.getPublicKey();
+                                    if (pubkey) resolve(pubkey);
+                                    else reject("Rejected");
+                                });
+                            },
+                            signEvent: function(event) {
+                                return new Promise((resolve, reject) => {
+                                    var res = AndroidNostr.signEvent(JSON.stringify(event));
+                                    if (res) resolve(JSON.parse(res));
+                                    else reject("Rejected");
+                                });
+                            },
+                            nip04: {
+                                encrypt: function(pubkey, plaintext) {
+                                    return new Promise((resolve, reject) => {
+                                        var res = AndroidNostr.nip04Encrypt(pubkey, plaintext);
+                                        if (res) resolve(res);
+                                        else reject("Rejected");
+                                    });
+                                },
+                                decrypt: function(pubkey, ciphertext) {
+                                    return new Promise((resolve, reject) => {
+                                        var res = AndroidNostr.nip04Decrypt(pubkey, ciphertext);
+                                        if (res) resolve(res);
+                                        else reject("Rejected");
+                                    });
+                                }
+                            },
+                            nip44: {
+                                encrypt: function(pubkey, plaintext) {
+                                    return new Promise((resolve, reject) => {
+                                        var res = AndroidNostr.nip44Encrypt(pubkey, plaintext);
+                                        if (res) resolve(res);
+                                        else reject("Rejected");
+                                    });
+                                },
+                                decrypt: function(pubkey, ciphertext) {
+                                    return new Promise((resolve, reject) => {
+                                        var res = AndroidNostr.nip44Decrypt(pubkey, ciphertext);
+                                        if (res) resolve(res);
+                                        else reject("Rejected");
+                                    });
+                                }
+                            },
+                            getRelays: function() {
+                                return new Promise((resolve) => {
+                                    resolve({
+                                        "wss://relay.damus.io": {read: true, write: true},
+                                        "wss://nos.lol": {read: true, write: true},
+                                        "wss://relay.primal.net": {read: true, write: true}
+                                    });
+                                });
+                            }
+                        };
+                    })();
+                """.trimIndent()
+
+                android.webkit.WebView(ctx).apply {
+                    webViewInstance = this
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    // Force GPU hardware acceleration for rendering WebGL/maps/complex SPAs correctly
+                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+
+                    // Clear cache, databases, and WebStorage to force a clean reload of resources and clear broken service workers
+                    clearCache(true)
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+
+                    // Enable cookies and third-party cookies for SPA compatibility
+                    val cookieManager = android.webkit.CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        databaseEnabled = true
+                        javaScriptCanOpenWindowsAutomatically = true
+                        loadWithOverviewMode = true
+                        useWideViewPort = true
+                        mediaPlaybackRequiresUserGesture = false
+                        mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        
+                        // Use native User Agent but remove WebView signatures to bypass Cloudflare/WAF bot blocks
+                        val defaultUa = userAgentString
+                        if (defaultUa != null) {
+                            userAgentString = defaultUa
+                                .replace("; wv", "")
+                                .replace("Version/4.0 ", "")
+                                .replace("Version/4.0", "")
+                        }
+
+                        // Disable algorithmic darkening (color inversion) completely.
+                        // We want websites to render their original CSS themes (including their own dark modes) natively.
+                        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                            WebSettingsCompat.setForceDark(this, WebSettingsCompat.FORCE_DARK_OFF)
+                        }
+                        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                            WebSettingsCompat.setAlgorithmicDarkeningAllowed(this, false)
+                        }
+                    }
+
+                    // Register NIP-07 injection script at document start using AndroidX Webkit
+                    if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                        try {
+                            WebViewCompat.addDocumentStartJavaScript(
+                                this,
+                                injectedJs,
+                                setOf("*")
+                            )
+                        } catch (e: Exception) {
+                            android.util.Log.e("WebViewNostr", "Error registering document start script", e)
+                        }
+                    }
+
+                    // Add JavaScript bridge interface
+                    addJavascriptInterface(object {
+                        @android.webkit.JavascriptInterface
+                        fun getPublicKey(): String {
+                            return uiState.nostrPubkeyHex ?: ""
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun signEvent(eventJson: String): String {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            var signedResult: String? = null
+                            activeRequest = BrowserRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                type = "Sign Event",
+                                detail = eventJson,
+                                onResponse = { res ->
+                                    signedResult = res
+                                    latch.countDown()
+                                }
+                            )
+                            latch.await()
+                            return signedResult ?: ""
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun nip04Encrypt(pubkey: String, plaintext: String): String {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            var encryptedResult: String? = null
+                            activeRequest = BrowserRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                type = "NIP-04 Encrypt",
+                                detail = "To: $pubkey\nPlaintext: $plaintext",
+                                onResponse = { res ->
+                                    if (res != null) {
+                                        val privKeyHex = uiState.nostrNsec?.let { dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(it)?.privkeyHex }
+                                        if (privKeyHex != null) {
+                                            try {
+                                                encryptedResult = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.nip04Encrypt(plaintext, pubkey, privKeyHex)
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("WebViewNostr", "Encrypt failed", e)
+                                            }
+                                        }
+                                    }
+                                    latch.countDown()
+                                }
+                            )
+                            latch.await()
+                            return encryptedResult ?: ""
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun nip04Decrypt(pubkey: String, ciphertext: String): String {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            var decryptedResult: String? = null
+                            activeRequest = BrowserRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                type = "NIP-04 Decrypt",
+                                detail = "From: $pubkey\nCiphertext: $ciphertext",
+                                onResponse = { res ->
+                                    if (res != null) {
+                                        val privKeyHex = uiState.nostrNsec?.let { dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(it)?.privkeyHex }
+                                        if (privKeyHex != null) {
+                                            try {
+                                                decryptedResult = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.nip04Decrypt(ciphertext, pubkey, privKeyHex)
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("WebViewNostr", "Decrypt failed", e)
+                                            }
+                                        }
+                                    }
+                                    latch.countDown()
+                                }
+                            )
+                            latch.await()
+                            return decryptedResult ?: ""
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun nip44Encrypt(pubkey: String, plaintext: String): String {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            var encryptedResult: String? = null
+                            activeRequest = BrowserRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                type = "NIP-44 Encrypt",
+                                detail = "To: $pubkey\nPlaintext: $plaintext",
+                                onResponse = { res ->
+                                    if (res != null) {
+                                        val privKeyHex = uiState.nostrNsec?.let { dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(it)?.privkeyHex }
+                                        if (privKeyHex != null) {
+                                            try {
+                                                encryptedResult = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.nip44Encrypt(plaintext, pubkey, privKeyHex)
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("WebViewNostr", "Encrypt failed", e)
+                                            }
+                                        }
+                                    }
+                                    latch.countDown()
+                                }
+                            )
+                            latch.await()
+                            return encryptedResult ?: ""
+                        }
+
+                        @android.webkit.JavascriptInterface
+                        fun nip44Decrypt(pubkey: String, ciphertext: String): String {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            var decryptedResult: String? = null
+                            activeRequest = BrowserRequest(
+                                id = java.util.UUID.randomUUID().toString(),
+                                type = "NIP-44 Decrypt",
+                                detail = "From: $pubkey\nCiphertext: $ciphertext",
+                                onResponse = { res ->
+                                    if (res != null) {
+                                        val privKeyHex = uiState.nostrNsec?.let { dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(it)?.privkeyHex }
+                                        if (privKeyHex != null) {
+                                            try {
+                                                decryptedResult = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.nip44Decrypt(ciphertext, pubkey, privKeyHex)
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("WebViewNostr", "Decrypt failed", e)
+                                            }
+                                        }
+                                    }
+                                    latch.countDown()
+                                }
+                            )
+                            latch.await()
+                            return decryptedResult ?: ""
+                        }
+                    }, "AndroidNostr")
+
+                    webViewClient = object : android.webkit.WebViewClient() {
+                        override fun onPageStarted(
+                            view: android.webkit.WebView?,
+                            url: String?,
+                            favicon: android.graphics.Bitmap?
+                        ) {
+                            super.onPageStarted(view, url, favicon)
+                            if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                                view?.evaluateJavascript(injectedJs, null)
+                            }
+                            if (url != null && url != urlInput.text) {
+                                urlInput = TextFieldValue(url)
+                            }
+                        }
+
+                        override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                                view?.evaluateJavascript(injectedJs, null)
+                            }
+                        }
+
+                        override fun onReceivedSslError(
+                            view: android.webkit.WebView?,
+                            handler: android.webkit.SslErrorHandler?,
+                            error: android.net.http.SslError?
+                        ) {
+                            handler?.proceed()
+                        }
+                    }
+
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                            android.util.Log.d("WebViewConsole", "${consoleMessage?.message()} -- From line ${consoleMessage?.lineNumber()} of ${consoleMessage?.sourceId()}")
+                            return super.onConsoleMessage(consoleMessage)
+                        }
+
+                        override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+                            request?.grant(request.resources)
+                        }
+
+                        override fun onGeolocationPermissionsShowPrompt(
+                            origin: String?,
+                            callback: android.webkit.GeolocationPermissions.Callback?
+                        ) {
+                            callback?.invoke(origin, true, false)
+                        }
+                    }
+                    loadUrl(urlInput.text)
+                }
+            },
+            update = { _ -> },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        )
+    }
+
+    // Modal Confirmation Dialog for Browser requests
+    val request = activeRequest
+    if (request != null) {
+        AlertDialog(
+            onDismissRequest = {
+                request.onResponse(null)
+                activeRequest = null
+            },
+            title = { Text(request.type) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "The website requests authorization:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = request.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (request.type == "Sign Event") {
+                            val privKeyHex = uiState.nostrNsec?.let { dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.deriveNostrKeys(it)?.privkeyHex }
+                            if (privKeyHex != null) {
+                                try {
+                                    val (_, signedJson) = dev.alsatianconsulting.NFCommunicator.domain.NostrEngine.signEvent(request.detail, privKeyHex)
+                                    request.onResponse(signedJson)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("WebViewNostr", "Sign failed", e)
+                                    request.onResponse(null)
+                                }
+                            } else {
+                                request.onResponse(null)
+                            }
+                        } else {
+                            request.onResponse("Approve")
+                        }
+                        activeRequest = null
+                    }
+                ) {
+                    Text("Approve")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        request.onResponse(null)
+                        activeRequest = null
+                    }
+                ) {
+                    Text("Reject")
+                }
+            }
+        )
+    }
+
+    // Modal URL Input Dialog
+    if (showUrlDialog) {
+        val focusRequester = remember { FocusRequester() }
+        LaunchedEffect(showUrlDialog) {
+            if (showUrlDialog) {
+                kotlinx.coroutines.delay(100)
+                focusRequester.requestFocus()
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showUrlDialog = false },
+            title = { Text("Enter Web Address", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    OutlinedTextField(
+                        value = tempUrlInput,
+                        onValueChange = { tempUrlInput = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        singleLine = true,
+                        trailingIcon = {
+                            if (tempUrlInput.isNotEmpty()) {
+                                IconButton(onClick = { tempUrlInput = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "Clear URL",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        },
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri,
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Go
+                        ),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onGo = {
+                                var target = tempUrlInput.trim()
+                                if (target.isNotEmpty()) {
+                                    if (!target.startsWith("http://") && !target.startsWith("https://")) {
+                                        target = "https://$target"
+                                    }
+                                    urlInput = TextFieldValue(target)
+                                    webViewInstance?.loadUrl(target)
+                                }
+                                showUrlDialog = false
+                            }
+                        )
+                    )
+
+                    // Quick suggestion shortcuts
+                    Text(
+                        text = "Quick Launch:",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://mynostrspace.com/" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("My Nostr Space", style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://primal.net" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Primal", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://iris.to" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Iris", style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://www.weatherstrikes.org/" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Weather Strikes", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://coracle.social" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Coracle", style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://snort.social" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Snort", style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(
+                            onClick = { tempUrlInput = "https://nostrudel.ninja" },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp).weight(1f)
+                        ) {
+                            Text("Nostrudel", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        var target = tempUrlInput.trim()
+                        if (target.isNotEmpty()) {
+                            if (!target.startsWith("http://") && !target.startsWith("https://")) {
+                                target = "https://$target"
+                            }
+                            urlInput = TextFieldValue(target)
+                            webViewInstance?.loadUrl(target)
+                        }
+                        showUrlDialog = false
+                    }
+                ) {
+                    Text("Go")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUrlDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

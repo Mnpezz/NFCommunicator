@@ -8,5 +8,6 @@
         <item name="android:navigationBarColor">@color/ember_surface</item>
         <item name="android:windowBackground">@color/ember_background</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 </resources>
